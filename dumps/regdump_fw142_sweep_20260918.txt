@@ -1,0 +1,78 @@
+Registerabzug Jupiter C Plus
+erzeugt: 2026-09-18T12:58:10
+label:   sweep-fw142
+
+Grobsuche ueber 0x0000-0xFFFF: keine weiteren Seiten antworten.
+(Findet Bloecke, keine isolierten Einzelregister.)
+
+57 Adressen mit Inhalt. Nicht belegte Adressen stehen unten
+nur noch zusammengefasst.
+
+Adresse  Wert    sicher  Bereich / Hinweis
+----------------------------------------------------------------
+0x0001   464     ja      Datenblock
+0x0002   37      ja      Datenblock
+0x0003   175     ja      Datenblock
+0x0004   463     ja      Datenblock
+0x0005   50      ja      Datenblock
+0x0006   232     ja      Datenblock
+0x0007   460     ja      Datenblock
+0x0008   49      ja      Datenblock
+0x0009   228     ja      Datenblock
+0x000A   466     ja      Datenblock
+0x000B   41      ja      Datenblock
+0x000C   192     NEIN    Datenblock
+0x000D   800     NEIN    Datenblock
+0x000E   270     ja      Datenblock
+0x000F   536     ja      Datenblock
+0x0010   99      ja      Datenblock
+0x0011   0       ja      Datenblock
+0x0012   0       ja      Datenblock
+0x0013   0       ja      Datenblock
+0x0014   351     ja      Datenblock
+0x0015   0       ja      Datenblock
+0x0016   2941    NEIN    Datenblock
+0x0017   0       ja      Datenblock
+0x0018   149     NEIN    Datenblock
+0x0019   0       ja      Datenblock
+0x001A   2701    NEIN    Datenblock
+0x001B   11      ja      Datenblock
+0x001C   142     ja      Datenblock
+0x001D   110     ja      Datenblock
+0x001E   213     ja      Datenblock
+0x001F   37      ja      Datenblock
+0x0020   3355    NEIN    Datenblock
+0x0028   800     NEIN    Datenblock | keine Antwort: timed out
+0x002A   1       ja      Datenblock
+0x1000   1       ja      Statusflags
+0x1001   1       ja      Statusflags
+0x1002   1       ja      Statusflags
+0x1003   1       ja      Statusflags
+0x1004   1       ja      Statusflags
+0x1005   1       ja      Statusflags
+0x1006   1       ja      Statusflags
+0x1007   1       ja      Statusflags
+0x1008   1       ja      Statusflags
+0x1009   1       ja      Statusflags
+0x100A   0       ja      Statusflags
+0x1100   24884   ja      Statusflags
+0x1101   25393   ja      Statusflags
+0x1102   13112   ja      Statusflags
+0x1103   14694   ja      Statusflags
+0x1104   12898   ja      Statusflags
+0x1105   14181   ja      Statusflags
+0x1200   12848   ja      Statusflags
+0x1201   12853   ja      Statusflags
+0x1202   12594   ja      Statusflags
+0x1203   12340   ja      Statusflags
+0x1204   12342   ja      Statusflags
+0x1205   13367   ja      Statusflags
+
+Ohne Inhalt (3014 Adressen):
+  0x0021 - 0x0027  (7)
+  0x0029
+  0x002B - 0x03FF  (981)
+  0x100B - 0x10FF  (245)
+  0x1106 - 0x11FF  (250)
+  0x1206 - 0x13FF  (506)
+  0x4000 - 0x43FF  (1024)

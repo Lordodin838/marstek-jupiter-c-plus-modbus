@@ -1,0 +1,622 @@
+# =====================================================================
+#  Marstek Jupiter C Plus  --  Home Assistant package
+#  https://github.com/Lordodin838/marstek-jupiter-c-plus-modbus
+# =====================================================================
+#
+#  Read-only. Nothing here writes to the device.
+#  Requires Home Assistant 2024.10 or newer (automation trigger syntax).
+#
+#  INSTALL
+#    1. Enable packages in configuration.yaml, if not already:
+#
+#         homeassistant:
+#           packages: !include_dir_named packages
+#
+#    2. Drop this file into  config/packages/
+#    3. Change the host below to your RS485-to-Ethernet gateway.
+#    4. RESTART Home Assistant. The native modbus: integration is not
+#       reloadable -- "Reload YAML" will not pick this up, and neither
+#       will homeassistant.reload_all. It must be a full restart.
+#
+#  THE SCAN INTERVALS ARE PRIME NUMBERS ON PURPOSE.
+#    Round intervals (10/20/30/60 s) all come due at the same second,
+#    and that burst is what makes cheap RS485 gateways hand back the
+#    wrong register's value -- silently, with no error anywhere.
+#    Primes never reassemble into a burst. Do not "tidy them up".
+#    See docs/gateway.md.
+#
+#  ONLY SIX REGISTERS NEED TO BE FAST: the four PV powers, grid power
+#  and SoC, at 10 s, because those are what you would control against.
+#  Everything else is slow on purpose. Fewer requests, fewer collisions.
+#
+#  CONFIDENCE: registers marked "unconfirmed" below are guesses that fit
+#  the observed behaviour but have not been cross-checked. Registers
+#  marked "unidentified" respond but nobody knows what they mean.
+# =====================================================================
+
+modbus:
+  - name: jupiter_c_plus
+    type: tcp
+    host: 192.168.1.50                # <-- CHANGE ME
+    port: 502
+    delay: 5                          # settle time after connecting
+    timeout: 5                        # do NOT lower. 3 s was too short and
+                                      # produced stray responses landing in
+                                      # the wrong sensor. See docs/gateway.md
+    message_wait_milliseconds: 150
+    sensors:
+
+      # --- PV strings ------------------------------------------------
+      # Voltage and current are slow (121 s): informational only.
+      # Power is fast (10 s): this is what you control against.
+
+      - name: "Jupiter PV1 Voltage"
+        unique_id: jupiter_modbus_pv1_voltage
+        address: 0x0001
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV1 Current"
+        unique_id: jupiter_modbus_pv1_current
+        address: 0x0002
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "A"
+        device_class: current
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV1 Power"
+        unique_id: jupiter_modbus_pv1_power
+        address: 0x0003
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        scan_interval: 10
+
+      - name: "Jupiter PV2 Voltage"
+        unique_id: jupiter_modbus_pv2_voltage
+        address: 0x0004
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV2 Current"
+        unique_id: jupiter_modbus_pv2_current
+        address: 0x0005
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "A"
+        device_class: current
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV2 Power"
+        unique_id: jupiter_modbus_pv2_power
+        address: 0x0006
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        scan_interval: 10
+
+      - name: "Jupiter PV3 Voltage"
+        unique_id: jupiter_modbus_pv3_voltage
+        address: 0x0007
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV3 Current"
+        unique_id: jupiter_modbus_pv3_current
+        address: 0x0008
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "A"
+        device_class: current
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV3 Power"
+        unique_id: jupiter_modbus_pv3_power
+        address: 0x0009
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        scan_interval: 10
+
+      - name: "Jupiter PV4 Voltage"
+        unique_id: jupiter_modbus_pv4_voltage
+        address: 0x000A
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV4 Current"
+        unique_id: jupiter_modbus_pv4_current
+        address: 0x000B
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "A"
+        device_class: current
+        state_class: measurement
+        scan_interval: 121
+
+      - name: "Jupiter PV4 Power"
+        unique_id: jupiter_modbus_pv4_power
+        address: 0x000C
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        scan_interval: 10
+
+      # --- Grid and battery ------------------------------------------
+
+      # SIGNED. Reading this as uint16 gives nonsense as soon as the
+      # device imports instead of exporting.
+      - name: "Jupiter Grid Power"
+        unique_id: jupiter_modbus_grid_power
+        address: 0x000D
+        input_type: holding
+        data_type: int16
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        scan_interval: 10
+
+      - name: "Jupiter Battery Voltage"
+        unique_id: jupiter_modbus_battery_voltage
+        address: 0x000F
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 31
+
+      - name: "Jupiter Battery SoC"
+        unique_id: jupiter_modbus_battery_soc
+        address: 0x0010
+        input_type: holding
+        data_type: uint16
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        scan_interval: 10
+
+      # Cell max x 16 should track battery voltage (16S pack).
+      # That identity is the sanity check for the whole map.
+      - name: "Jupiter Cell Voltage Max"
+        unique_id: jupiter_modbus_cell_voltage_max
+        address: 0x0020
+        input_type: holding
+        data_type: uint16
+        scale: 0.001
+        precision: 3
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 61
+
+      - name: "Jupiter Cell Voltage Min"
+        unique_id: jupiter_modbus_cell_voltage_min
+        address: 0x0021
+        input_type: holding
+        data_type: uint16
+        scale: 0.001
+        precision: 3
+        unit_of_measurement: "V"
+        device_class: voltage
+        state_class: measurement
+        scan_interval: 67
+
+      # UNCONFIRMED. Follows a day/night curve rather than load,
+      # which is why it is read as a temperature. Not cross-checked.
+      - name: "Jupiter Temperature"
+        unique_id: jupiter_modbus_temperature
+        address: 0x000E
+        input_type: holding
+        data_type: uint16
+        scale: 0.1
+        precision: 1
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        scan_interval: 127
+
+      # --- Energy counters -------------------------------------------
+      # 32-bit, high word first, no swap needed. Deliberately slow and
+      # on four different primes: do not let uint32 reads pile up.
+
+      - name: "Jupiter Daily Generation"
+        unique_id: jupiter_modbus_daily_generation
+        address: 0x0013
+        input_type: holding
+        data_type: uint32
+        scale: 0.01
+        precision: 2
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        scan_interval: 293
+
+      - name: "Jupiter Monthly Generation"
+        unique_id: jupiter_modbus_monthly_generation
+        address: 0x0015
+        input_type: holding
+        data_type: uint32
+        scale: 0.01
+        precision: 2
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        scan_interval: 307
+
+      - name: "Jupiter Daily Grid Feed-in"
+        unique_id: jupiter_modbus_daily_grid
+        address: 0x0017
+        input_type: holding
+        data_type: uint32
+        scale: 0.01
+        precision: 2
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        scan_interval: 311
+
+      - name: "Jupiter Monthly Grid Feed-in"
+        unique_id: jupiter_modbus_monthly_grid
+        address: 0x0019
+        input_type: holding
+        data_type: uint32
+        scale: 0.01
+        precision: 2
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: total_increasing
+        scan_interval: 313
+
+      # --- Fault code ------------------------------------------------
+      # Holds the DECIMAL value of the HEX code in the manual:
+      #   1062 -> 0x426 -> manual fault 426
+      # Decoded to text by the template sensor further down.
+      # 61 s: fast enough to catch most faults, slow enough not to add
+      # meaningful bus load. Short faults can still slip between polls.
+
+      - name: "Jupiter Fault Code"
+        unique_id: jupiter_modbus_fault_code
+        address: 0x0011
+        input_type: holding
+        data_type: uint16
+        scan_interval: 61
+
+      # --- Identification and versions -------------------------------
+      # Effectively static. Hourly is plenty; the primes keep them from
+      # all landing in the same second once an hour.
+
+      - name: "Jupiter Device ID"
+        unique_id: jupiter_modbus_device_id
+        address: 0x001B
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3607
+
+      - name: "Jupiter EMS Version"
+        unique_id: jupiter_modbus_ems_version
+        address: 0x001C
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3613
+
+      - name: "Jupiter INV Version"
+        unique_id: jupiter_modbus_inv_version
+        address: 0x001D
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3617
+
+      - name: "Jupiter MPPT Version"
+        unique_id: jupiter_modbus_mppt_version
+        address: 0x001E
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3623
+
+      - name: "Jupiter BMS Version"
+        unique_id: jupiter_modbus_bms_version
+        address: 0x001F
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3631
+
+      - name: "Jupiter Screen Version"
+        unique_id: jupiter_modbus_screen_version
+        address: 0x0022
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3637
+
+      # 0 = Jupiter C 800 W. If this ever changes, the register map
+      # has shifted and every other value is suspect.
+      - name: "Jupiter Device Type"
+        unique_id: jupiter_modbus_device_type
+        address: 0x0025
+        input_type: holding
+        data_type: uint16
+        scan_interval: 3643
+
+      # --- ASCII blocks ----------------------------------------------
+      # Twelve ASCII characters each, read as one string of 6 registers.
+      # If stray values start appearing again after adding these, the
+      # 6-register read length is the first thing to suspect -- it is
+      # longer than anything else here. Verified working on HA 2026.9.2.
+
+      - name: "Jupiter MAC Address"
+        unique_id: jupiter_modbus_mac
+        address: 0x1100
+        input_type: holding
+        data_type: string
+        count: 6
+        scan_interval: 3659
+
+      # Build stamp, e.g. 202512040647 = 2025-12-04 build 0647.
+      # Versioned separately from the four versions above and NOT
+      # changed by an EMS firmware update.
+      - name: "Jupiter Comms Module Firmware"
+        unique_id: jupiter_modbus_comm_version
+        address: 0x1200
+        input_type: holding
+        data_type: string
+        count: 6
+        scan_interval: 3671
+
+      # --- Unidentified, keep if you want to help identify them ------
+
+      # Permanently 0 here. Possibly a second alarm code.
+      - name: "Jupiter Unknown 0x0012"
+        unique_id: jupiter_diag_0012
+        address: 0x0012
+        input_type: holding
+        data_type: int16
+        scan_interval: 607
+
+      # Narrow band 36-39. Ruled out: current, voltage, SoC.
+      - name: "Jupiter Unknown 0x0023"
+        unique_id: jupiter_diag_0023
+        address: 0x0023
+        input_type: holding
+        data_type: uint16
+        scan_interval: 601
+
+    binary_sensors:
+
+      # --- Working status --------------------------------------------
+      # Confirmed: all four PV flags go to 0 at night.
+      # NOTE 0x1000-0x1003 and 0x1009/0x100A also respond but are NOT
+      # boolean (0x1001 reads 2), so they are deliberately not here.
+
+      - name: "Jupiter PV1 Status"
+        unique_id: jupiter_modbus_pv1_status
+        address: 0x1004
+        input_type: holding
+        device_class: running
+        scan_interval: 197
+
+      - name: "Jupiter PV2 Status"
+        unique_id: jupiter_modbus_pv2_status
+        address: 0x1005
+        input_type: holding
+        device_class: running
+        scan_interval: 199
+
+      - name: "Jupiter PV3 Status"
+        unique_id: jupiter_modbus_pv3_status
+        address: 0x1006
+        input_type: holding
+        device_class: running
+        scan_interval: 211
+
+      - name: "Jupiter PV4 Status"
+        unique_id: jupiter_modbus_pv4_status
+        address: 0x1007
+        input_type: holding
+        device_class: running
+        scan_interval: 223
+
+      - name: "Jupiter Inverter Status"
+        unique_id: jupiter_modbus_inv_status
+        address: 0x1008
+        input_type: holding
+        device_class: running
+        scan_interval: 227
+
+# =====================================================================
+#  Derived sensors
+# =====================================================================
+
+template:
+  - sensor:
+
+      # Fault code in plain text.
+      # The register holds the DECIMAL value of the HEX code printed in
+      # the manual, so it has to be formatted back to hex before lookup.
+      - name: "Jupiter Fault Text"
+        unique_id: jupiter_fault_code_text
+        icon: mdi:alert-circle-outline
+        availability: "{{ has_value('sensor.jupiter_fault_code') }}"
+        state: >
+          {% set codes = {
+            '404': 'Grid-side overheat protection',
+            '406': 'Grid overvoltage',
+            '408': 'Grid undervoltage',
+            '409': 'Grid overfrequency',
+            '410': 'Grid underfrequency',
+            '414': 'Grid islanding detected',
+            '415': 'Grid overvoltage',
+            '418': 'Device fault',
+            '419': 'Device fault',
+            '422': 'Grid overcurrent',
+            '426': 'undocumented - not in the manual',
+            '440': 'Battery overvoltage',
+            '441': 'Battery overcurrent',
+            '442': 'Battery undervoltage',
+            '443': 'Current reversal',
+            '444': 'Start-up voltage too low',
+            '445': 'PV overheat protection',
+            '446': 'PV1 overcurrent',
+            '447': 'PV2 overcurrent',
+            '448': 'PV3 overcurrent',
+            '449': 'PV4 overcurrent',
+            '450': 'PV negative pole miswired',
+            '451': 'PE earthing anomaly',
+            '452': 'PE earthing anomaly',
+            '453': 'Battery overvoltage',
+            '454': 'Current reversal',
+            '4C0': 'Slave communication error',
+            '4C1': 'Slave communication error',
+            '4C2': 'Temperature limit reached',
+            '4C3': 'Temperature limit reached',
+            '4C4': 'Temperature limit reached',
+            '530': 'Battery charge too low',
+            '547': 'Battery charge too low',
+            '548': 'Battery charge too low',
+            '5C0': 'CT connection error',
+            '5C1': 'Phase sequence detection failed',
+            '5C2': 'Wi-Fi signal anomaly',
+            '5C3': 'Bluetooth status anomaly',
+            '5C4': 'OTA update failed',
+            '5C5': 'OTA update failed',
+            '5C6': 'OTA update failed',
+            '5C7': 'Network anomaly',
+            '5C8': 'Network anomaly',
+            '5C9': 'Network anomaly',
+            '5CA': 'Network anomaly',
+            '5CB': 'Network anomaly' } %}
+          {% set v = states('sensor.jupiter_fault_code') | int(0) %}
+          {% if v == 0 %}no fault
+          {% else %}
+          {% set h = '{:X}'.format(v) %}
+          0x{{ h }} - {{ codes.get(h, 'not in the manual') }}
+          {% endif %}
+
+      # Total PV power across the four strings.
+      - name: "Jupiter PV Total Power"
+        unique_id: jupiter_modbus_total_pv_power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        availability: >
+          {{ has_value('sensor.jupiter_pv1_power')
+             and has_value('sensor.jupiter_pv2_power')
+             and has_value('sensor.jupiter_pv3_power')
+             and has_value('sensor.jupiter_pv4_power') }}
+        state: >
+          {{ states('sensor.jupiter_pv1_power') | float(0)
+           + states('sensor.jupiter_pv2_power') | float(0)
+           + states('sensor.jupiter_pv3_power') | float(0)
+           + states('sensor.jupiter_pv4_power') | float(0) }}
+
+      # Cell spread. A widening spread is the earliest warning a pack
+      # gives you, long before anything trips.
+      - name: "Jupiter Cell Spread"
+        unique_id: jupiter_cell_spread
+        unit_of_measurement: "mV"
+        state_class: measurement
+        availability: >
+          {{ has_value('sensor.jupiter_cell_voltage_max')
+             and has_value('sensor.jupiter_cell_voltage_min') }}
+        state: >
+          {{ ((states('sensor.jupiter_cell_voltage_max') | float(0)
+             - states('sensor.jupiter_cell_voltage_min') | float(0))
+             * 1000) | round(0) | int }}
+
+
+# =====================================================================
+#  Cloud-independent fault alarm
+# =====================================================================
+#  This is the point of register 0x0011: the manufacturer app and any
+#  MQTT bridge both depend on Marstek's servers. This does not.
+
+automation:
+  - id: jupiter_fault_notify
+    alias: "Jupiter: report fault"
+    mode: queued
+    max: 5
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.jupiter_fault_code
+        above: 0
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: "Jupiter fault"
+          message: >
+            {{ states('sensor.jupiter_fault_text') }}
+            (register value {{ states('sensor.jupiter_fault_code') }})
+
+
+# =====================================================================
+#  Optional: run the register scanner from Home Assistant
+# =====================================================================
+#  Two non-obvious workarounds are baked into the line below. Both are
+#  Home Assistant behaviours, not device quirks:
+#
+#  1. shell_command does NOT run through a shell. It uses
+#     create_subprocess_exec, so '>' redirection and '&' are passed as
+#     literal arguments and do nothing. Hence the /bin/bash -c wrapper.
+#
+#  2. shell_command times out after 60 s. A full scan takes minutes, so
+#     it has to be backgrounded with nohup and '&', and progress read
+#     from the log file afterwards.
+#
+#  Uncomment and fix the paths to use it. Call with:
+#     action: shell_command.jupiter_register_dump
+#     data:
+#       label: before-update
+#
+#  The script takes --sweep too, but there is no separate field for it;
+#  append it to the label:   label: "sweep-test --sweep"
+#
+# shell_command:
+#   jupiter_register_dump: >-
+#     /bin/bash -c "nohup python3 /config/scripts/regscan.py
+#     --host 192.168.1.50 --label {{ label | default('dump') }} >
+#     /config/scripts/last_run.log 2>&1 &"
