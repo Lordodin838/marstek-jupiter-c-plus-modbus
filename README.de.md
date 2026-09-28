@@ -1,6 +1,16 @@
 # Marstek Jupiter C Plus — Modbus-Feldnotizen
 
-*[English version: README.md](README.md)*
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Lordodin838/marstek-jupiter-c-plus-modbus?label=Lizenz" alt="Lizenz"></a>
+  <img src="https://img.shields.io/badge/Register-57%20dokumentiert-blue" alt="57 Register dokumentiert">
+  <img src="https://img.shields.io/badge/Firmware-142.37.213.110-informational" alt="Firmware 142.37.213.110">
+  <img src="https://img.shields.io/badge/Zugriff-nur%20lesend-brightgreen" alt="Nur lesend">
+  <a href="https://github.com/Lordodin838/ha-marstek-jupiter-c-plus"><img src="https://img.shields.io/badge/Home%20Assistant-Integration-41BDF5?logo=homeassistant&logoColor=white" alt="Home-Assistant-Integration"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">🇬🇧 English</a> · <b>🇩🇪 Deutsch</b>
+</p>
 
 Lesende Modbus-Dokumentation für den **Marstek Jupiter C Plus** (800 W
 Balkonspeicher, 4 PV-Strings), entstanden durch mehrtägiges Abtasten des
@@ -13,6 +23,21 @@ Datenblatt abgeschrieben. Wo eine Deutung geraten ist, steht das dabei.
 
 **Enthält drei Register, die in keiner öffentlichen Registerkarte stehen**, dazu
 Korrekturen an den Grenzen des bekannten Datenblocks.
+
+> **Nur die Sensoren in Home Assistant gesucht?**
+> Dann nimm die fertige Integration:
+> **[ha-marstek-jupiter-c-plus](https://github.com/Lordodin838/ha-marstek-jupiter-c-plus)** — über HACS
+> installierbar, Einrichtung in der Oberfläche, kein YAML. Dieses Repository ist
+> die Dokumentation dahinter.
+
+## Inhaltsverzeichnis
+
+- [Stand](#stand) — was gemessen wurde, an welchem Gerät und welcher Firmware
+- [Neue Befunde](#neue-befunde) — die drei Register, die in keiner anderen Karte stehen
+- [Korrekturen an der bekannten Karte](#korrekturen-an-der-bekannten-karte)
+- [Vollständige Registerkarte](#vollständige-registerkarte) — jede Adresse mit Sicherheitsangabe
+- [Inhalt](#inhalt) — Scanner, Home-Assistant-Package, Dumps
+- [Dank](#dank)
 
 ---
 

@@ -1,6 +1,16 @@
 # Marstek Jupiter C Plus — Modbus RTU/TCP field notes
 
-*[Deutsche Fassung: README.de.md](README.de.md)*
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Lordodin838/marstek-jupiter-c-plus-modbus?label=License" alt="License"></a>
+  <img src="https://img.shields.io/badge/registers-57%20documented-blue" alt="57 registers documented">
+  <img src="https://img.shields.io/badge/firmware-142.37.213.110-informational" alt="Firmware 142.37.213.110">
+  <img src="https://img.shields.io/badge/access-read--only-brightgreen" alt="Read-only">
+  <a href="https://github.com/Lordodin838/ha-marstek-jupiter-c-plus"><img src="https://img.shields.io/badge/Home%20Assistant-integration-41BDF5?logo=homeassistant&logoColor=white" alt="Home Assistant integration"></a>
+</p>
+
+<p align="center">
+  <b>🇬🇧 English</b> · <a href="README.de.md">🇩🇪 Deutsch</a>
+</p>
 
 Read-only Modbus documentation for the **Marstek Jupiter C Plus** (800 W balcony
 storage, 4 PV strings), gathered by scanning the register space of one physical
@@ -13,6 +23,20 @@ Where a reading is a guess, it says so.
 
 **Contains three registers that are not in any public register map**, plus
 corrections to the boundaries of the known data block.
+
+> **Just want the sensors in Home Assistant?**
+> Take the ready-made integration instead:
+> **[ha-marstek-jupiter-c-plus](https://github.com/Lordodin838/ha-marstek-jupiter-c-plus)** — installable through HACS,
+> set up in the UI, no YAML. This repository is the documentation behind it.
+
+## Contents
+
+- [Status](#status) — what was measured, on which device and firmware
+- [New findings](#new-findings) — the three registers no other map has
+- [Corrections to the known map](#corrections-to-the-known-map)
+- [Full register map](#full-register-map) — every address with a confidence level
+- [What's in here](#whats-in-here) — scanner, Home Assistant package, dumps
+- [Credits](#credits)
 
 ---
 
