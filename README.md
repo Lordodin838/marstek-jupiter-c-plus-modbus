@@ -27,6 +27,7 @@ corrections to the boundaries of the known data block.
 | Function codes | FC3 (read holding registers) only. **FC4 is not supported** — the device answers exception 1 |
 | Scope | Read-only. Nothing in this repository writes to the device |
 | Sample size | One device. Treat everything as "confirmed on one unit" |
+| Jupiter E | Marstek's own table covers C and E together (device type 3–5), so this map is expected to hold there too — not measured on an E |
 
 ---
 
@@ -182,6 +183,13 @@ turned out to matter more than any other single setting.
   `0x000E`, reported by Lordodin838. Both carried over into the map here.
 - **[retris83-ger/Marstek-Jupiter-C-Plus-Modbus-ESPHome](https://github.com/retris83-ger/Marstek-Jupiter-C-Plus-Modbus-ESPHome)**
   — ESPHome implementation for the same device.
+- **[stevedee78/Marstek-Jupiter-E-Modbus-ESPhome](https://github.com/stevedee78/Marstek-Jupiter-E-Modbus-ESPhome)**
+  — carries a photograph of Marstek's own register table, which covers the
+  Jupiter C and E together. It is where the meanings of `0x1009`, `0x100A`, the
+  device type codes and the write registers `0x4000`–`0x4004` in this repository
+  come from.
+- **[h6s/Marstek-Jupiter-E_ioBroker](https://github.com/h6s/Marstek-Jupiter-E_ioBroker)**
+  — ESPHome configuration for the Jupiter E, same addresses.
 - The Marstek threads on **photovoltaikforum.com**, where fault code 426 has its
   own thread titled, fittingly, "Fehlercode 426, der Unbekannte".
 

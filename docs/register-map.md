@@ -55,11 +55,12 @@ swap is needed.
 | `0x0022` | Screen firmware version | u16 | 1 | — | confirmed |
 | `0x0023` | — | u16 | ? | ? | **unknown** — [see below](#0x0023--unidentified) |
 | `0x0024` | — | u16 | ? | ? | unknown, constant 0 |
-| `0x0025` | Device type (`0` = Jupiter C 800 W) | u16 | 1 | — | confirmed |
+| `0x0025` | Device type (`0` here; full list [below](#device-type-0x0025)) | u16 | 1 | — | confirmed |
 
 **`0x000D` is signed.** Reading it as u16 gives nonsense the moment the device
 imports rather than exports. The sign convention follows the CT: positive means
-power flowing in the direction the clamp counts as import.
+power flowing in the direction the clamp counts as import. Marstek's own table
+lists it as u16 as well — it is not.
 
 **`0x0020` × 16 ≈ `0x000F`.** That identity is what confirms both: 16 cells in
 series, maximum cell voltage times 16 tracks the pack voltage across the whole
@@ -72,6 +73,26 @@ range.
 settable discharge limit, but it is reachable only through the app and the
 cloud/MQTT path. Nothing appeared in the register map across a 138 → 142 update —
 confirmed by a byte-for-byte diff of a full register dump taken before and after.
+
+### Device type `0x0025`
+
+Marstek's official table lists six values, covering both the Jupiter C and the
+Jupiter E. The device measured for this repository reads `0`.
+
+| Value | Device |
+|---|---|
+| 0 | Jupiter C 800 W |
+| 1 | Jupiter C 1000 W |
+| 2 | Jupiter C 600 W |
+| 3 | Jupiter E 800 W |
+| 4 | Jupiter E 1000 W |
+| 5 | Jupiter E 600 W |
+
+That the same table covers both models is the reason to expect this register map
+to hold for the Jupiter E as well — **expect**, not know: nothing here was
+measured on an E. Readings from an E are welcome as an issue.
+
+---
 
 ## Gap `0x0026`–`0x0029`
 
@@ -112,18 +133,46 @@ down to single registers.
 | `0x1006` | PV3 working status | 0/1 | confirmed |
 | `0x1007` | PV4 working status | 0/1 | confirmed |
 | `0x1008` | Inverter working status | 0/1 | confirmed |
-| `0x1009` | status flag | 0 and 1 | unknown |
-| `0x100A` | status flag | 0 | unknown |
+| `0x1009` | **Charge/discharge permission** | 0 and 1 | plausible — [see below](#0x1009-and-0x100a--the-official-table) |
+| `0x100A` | **Allowable discharge power** | 0 | plausible — [see below](#0x1009-and-0x100a--the-official-table) |
 
 `0x1001` has been seen holding **2**, not just 0 or 1. Whatever this block is, it
 is not purely boolean, so do not map it blindly onto binary sensors the way
-`0x1004`–`0x1008` can be. `0x1001` and `0x1009` both change over time, so they
-carry something; nobody has worked out what.
+`0x1004`–`0x1008` can be. `0x1001` changes over time and nobody has worked out what it
+carries. `0x1009` and `0x100A` have a documented meaning in Marstek's own
+table — see below.
 
 The PV status flags follow daylight exactly (all four at 0 at night), which is
 what confirms them.
 
 `0x100B`–`0x10FF`: no response.
+
+---
+
+### `0x1009` and `0x100A` — the official table
+
+Marstek's own register table — the one shipped with the Jupiter E and
+photographed in
+[stevedee78/Marstek-Jupiter-E-Modbus-ESPhome](https://github.com/stevedee78/Marstek-Jupiter-E-Modbus-ESPhome)
+— gives both of these a meaning:
+
+| Addr | Official name | Notes from the table |
+|---|---|---|
+| `0x1009` | charge and discharge marker | MSB: 1 = charging allowed, 0 = no charging. LSB: 1 = discharging allowed, 0 = no discharging. Example value `0x11` = "chargeable and dischargeable" |
+| `0x100A` | allowable discharge power | in W, "maximum current permissible battery discharge" |
+
+Two caveats before anyone maps these onto entities:
+
+**The bit layout is not settled.** The table says MSB and LSB, but its own
+example `0x11` fits *nibbles* (`0x10` charge, `0x01` discharge), not bytes
+(`0x0100` / `0x0001`). Both readings are consistent with what was measured here
+(0 and 1), because a full battery that may discharge but not charge reads 1
+either way. Decode defensively until someone logs a full charge cycle.
+
+**`0x100A` reading 0 is a measurement, not a dead register.** It stood at 0
+throughout the observation period. With the discharge permission at 0 that is
+plausible, but a non-zero value has not been seen here, so the scaling is
+unverified.
 
 ---
 
@@ -167,10 +216,26 @@ update. The only way to detect a new comms module build.
 
 ## Write registers `0x4000`+
 
-`0x4000`–`0x43FF` return no data on FC3. Presumed write-only control registers, by
-analogy with other devices in the Marstek range. **Not investigated** — everything
-in this repository is read-only by design, and probing write registers on a
+`0x4000`–`0x43FF` return no data on FC3. **Not probed by writing** — everything in
+this repository is read-only by design, and probing write registers on a
 grid-tied inverter is a good way to find out what an undocumented write does.
+
+Marstek's own table documents five of them, for function code `0x06`:
+
+| Addr | Official name | Values from the table |
+|---|---|---|
+| `0x4000` | surplus power feed-in | 0 = off, 1 = on |
+| `0x4001` | reset the jupiter | 1 = reset |
+| `0x4002` | select EMS mode | 0 = internal EMS, 1 = external EMS (RS485) |
+| `0x4003` | set the grid-connected power | range 30–800 W |
+| `0x4004` | set the Device ID | range `0x08`–`0xF7` |
+
+Documented is not the same as working: in the Home Assistant community forum a
+Jupiter C Plus owner reports that writes to `0x4003` are
+[ignored](https://community.home-assistant.io/t/marstek-jupiter-c-plus-modbus-tcp-rs485-write-commands-ignored-register-16387/1021269),
+via FC06 and FC16, including after switching `0x4002`. The table also marks part
+of its content as "not supported at the moment"; which part is not legible in
+the available photograph.
 
 ---
 

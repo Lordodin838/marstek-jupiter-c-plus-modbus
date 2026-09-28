@@ -27,6 +27,7 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 | Funktionscodes | Nur FC3 (Holding Register lesen). **FC4 wird nicht unterstützt** — das Gerät antwortet mit Exception 1 |
 | Umfang | Nur lesend. Nichts in diesem Repository schreibt ins Gerät |
 | Stichprobe | Ein Gerät. Alles hier gilt als „an einem Exemplar bestätigt" |
+| Jupiter E | Marsteks eigene Tabelle deckt C und E gemeinsam ab (Gerätetyp 3–5); die Karte dürfte dort ebenso gelten — an einem E wurde nicht gemessen |
 
 ---
 
@@ -191,6 +192,12 @@ Einstellung.
   `0x000E`, gemeldet von Lordodin838. Beides hier übernommen.
 - **[retris83-ger/Marstek-Jupiter-C-Plus-Modbus-ESPHome](https://github.com/retris83-ger/Marstek-Jupiter-C-Plus-Modbus-ESPHome)**
   — ESPHome-Umsetzung für dasselbe Gerät.
+- **[stevedee78/Marstek-Jupiter-E-Modbus-ESPhome](https://github.com/stevedee78/Marstek-Jupiter-E-Modbus-ESPhome)**
+  — enthält ein Foto von Marsteks eigener Registertabelle, die Jupiter C und E
+  gemeinsam abdeckt. Von dort stammen die Bedeutungen von `0x1009`, `0x100A`, die
+  Gerätetyp-Codes und die Schreibregister `0x4000`–`0x4004` in diesem Repository.
+- **[h6s/Marstek-Jupiter-E_ioBroker](https://github.com/h6s/Marstek-Jupiter-E_ioBroker)**
+  — ESPHome-Konfiguration für den Jupiter E, gleiche Adressen.
 - Die Marstek-Fäden im **photovoltaikforum.com**, wo der Fehlercode 426 einen
   eigenen Thread hat, treffend betitelt „Fehlercode 426, der Unbekannte".
 

@@ -55,11 +55,12 @@ Byte- noch Word-Swap nötig.
 | `0x0022` | Display-Firmwarestand | u16 | 1 | — | bestätigt |
 | `0x0023` | — | u16 | ? | ? | **unbekannt** — [siehe unten](#0x0023--ungeklärt) |
 | `0x0024` | — | u16 | ? | ? | unbekannt, konstant 0 |
-| `0x0025` | Gerätetyp (`0` = Jupiter C 800 W) | u16 | 1 | — | bestätigt |
+| `0x0025` | Gerätetyp (`0` hier; vollständige Liste unten) | u16 | 1 | — | bestätigt |
 
 **`0x000D` ist vorzeichenbehaftet.** Als u16 gelesen liefert es Unsinn, sobald das
 Gerät bezieht statt einzuspeisen. Das Vorzeichen folgt dem CT: positiv heißt
-Leistung in der Richtung, die die Klemme als Bezug zählt.
+Leistung in der Richtung, die die Klemme als Bezug zählt. Auch Marsteks eigene
+Tabelle führt es als u16 — das stimmt nicht.
 
 **`0x0020` × 16 ≈ `0x000F`.** Diese Identität bestätigt beide: 16 Zellen in Reihe,
 maximale Zellspannung mal 16 folgt der Packspannung über den ganzen Bereich.
@@ -73,6 +74,26 @@ einstellbare Entladegrenze gebracht, erreichbar ist sie aber nur über App und
 Cloud-/MQTT-Pfad. Über das Update 138 → 142 kam in der Registerkarte nichts dazu —
 belegt durch einen byteweisen Vergleich zweier vollständiger Registerabzüge vor
 und nach dem Update.
+
+### Gerätetyp `0x0025`
+
+Marsteks offizielle Tabelle führt sechs Werte auf, für Jupiter C und Jupiter E
+gemeinsam. Das Gerät, an dem hier gemessen wurde, liefert `0`.
+
+| Wert | Gerät |
+|---|---|
+| 0 | Jupiter C 800 W |
+| 1 | Jupiter C 1000 W |
+| 2 | Jupiter C 600 W |
+| 3 | Jupiter E 800 W |
+| 4 | Jupiter E 1000 W |
+| 5 | Jupiter E 600 W |
+
+Dass dieselbe Tabelle beide Modelle abdeckt, ist der Grund, diese Registerkarte
+auch beim Jupiter E zu **erwarten** — erwarten, nicht wissen: gemessen wurde
+hier nichts an einem E. Messwerte von einem E gerne als Issue.
+
+---
 
 ## Lücke `0x0026`–`0x0029`
 
@@ -114,19 +135,46 @@ Blöcke bis auf Einzelregister hinunter halbiert.
 | `0x1006` | PV3 Arbeitsstatus | 0/1 | bestätigt |
 | `0x1007` | PV4 Arbeitsstatus | 0/1 | bestätigt |
 | `0x1008` | Wechselrichter Arbeitsstatus | 0/1 | bestätigt |
-| `0x1009` | Statusflag | 0 und 1 | unbekannt |
-| `0x100A` | Statusflag | 0 | unbekannt |
+| `0x1009` | **Lade-/Entlade-Freigabe** | 0 und 1 | plausibel — [siehe unten](#0x1009-und-0x100a--die-offizielle-tabelle) |
+| `0x100A` | **Zulässige Entladeleistung** | 0 | plausibel — [siehe unten](#0x1009-und-0x100a--die-offizielle-tabelle) |
 
 `0x1001` wurde schon auf **2** gesehen, nicht nur auf 0 oder 1. Was dieser Block
 auch immer ist, er ist nicht rein boolesch — also nicht blind auf Binärsensoren
-abbilden, wie es bei `0x1004`–`0x1008` geht. `0x1001` und `0x1009` ändern sich
-beide über die Zeit, tragen also eine Information; welche, hat noch niemand
-herausgefunden.
+abbilden, wie es bei `0x1004`–`0x1008` geht. `0x1001` ändert sich über die Zeit, trägt also eine
+Information; welche, hat noch niemand herausgefunden. Für `0x1009` und
+`0x100A` gibt es in Marsteks eigener Tabelle eine Bedeutung — siehe unten.
 
 Die PV-Statusflags folgen exakt dem Tageslicht (nachts alle vier auf 0), das ist
 die Bestätigung.
 
 `0x100B`–`0x10FF`: keine Antwort.
+
+---
+
+### `0x1009` und `0x100A` — die offizielle Tabelle
+
+Marsteks eigene Registertabelle — die dem Jupiter E beiliegt und in
+[stevedee78/Marstek-Jupiter-E-Modbus-ESPhome](https://github.com/stevedee78/Marstek-Jupiter-E-Modbus-ESPhome)
+abfotografiert ist — gibt beiden eine Bedeutung:
+
+| Adr | Offizieller Name | Angaben aus der Tabelle |
+|---|---|---|
+| `0x1009` | charge and discharge marker | MSB: 1 = Laden erlaubt, 0 = kein Laden. LSB: 1 = Entladen erlaubt, 0 = kein Entladen. Beispielwert `0x11` = „chargeable and dischargeable" |
+| `0x100A` | allowable discharge power | in W, „maximum current permissible battery discharge" |
+
+Zwei Vorbehalte, bevor das jemand auf Entitäten abbildet:
+
+**Die Bitlage ist nicht belegt.** Die Tabelle spricht von MSB und LSB, ihr
+eigener Beispielwert `0x11` passt aber zu *Nibbles* (`0x10` Laden, `0x01`
+Entladen), nicht zu Bytes (`0x0100` / `0x0001`). Beide Lesarten vertragen sich
+mit dem hier Gemessenen (0 und 1): ein voller Akku, der entladen, aber nicht
+laden darf, liest sich so wie so als 1. Bis jemand einen vollständigen
+Ladezyklus mitschreibt, also defensiv dekodieren.
+
+**Dass `0x100A` auf 0 steht, ist ein Messwert, kein totes Register.** Es stand
+über den ganzen Beobachtungszeitraum auf 0. Bei Entladesperre ist das
+plausibel; ein Wert ungleich 0 wurde hier nie gesehen, die Skalierung ist also
+ungeprüft.
 
 ---
 
@@ -170,11 +218,27 @@ einzige Möglichkeit, einen neuen Stand des Kommunikationsmoduls zu bemerken.
 
 ## Schreibregister `0x4000`+
 
-`0x4000`–`0x43FF` liefern auf FC3 keine Daten. Vermutlich schreibende
-Steuerregister, in Analogie zu anderen Geräten der Marstek-Reihe. **Nicht
+`0x4000`–`0x43FF` liefern auf FC3 keine Daten. **Nicht durch Schreiben
 untersucht** — alles hier ist bewusst nur lesend, und an einem netzgekoppelten
 Wechselrichter undokumentierte Schreibregister auszuprobieren ist ein guter Weg,
 um herauszufinden, was ein undokumentiertes Schreiben anrichtet.
+
+Marsteks eigene Tabelle dokumentiert fünf davon, für Funktionscode `0x06`:
+
+| Adr | Offizieller Name | Werte laut Tabelle |
+|---|---|---|
+| `0x4000` | surplus power feed-in | 0 = aus, 1 = ein |
+| `0x4001` | reset the jupiter | 1 = Reset |
+| `0x4002` | select EMS mode | 0 = internes EMS, 1 = externes EMS (RS485) |
+| `0x4003` | set the grid-connected power | Bereich 30–800 W |
+| `0x4004` | set the Device ID | Bereich `0x08`–`0xF7` |
+
+Dokumentiert heißt nicht funktionierend: Im Home-Assistant-Forum berichtet ein
+Besitzer eines Jupiter C Plus, dass Schreibzugriffe auf `0x4003`
+[ignoriert werden](https://community.home-assistant.io/t/marstek-jupiter-c-plus-modbus-tcp-rs485-write-commands-ignored-register-16387/1021269),
+per FC06 wie per FC16 und auch nach Umschalten von `0x4002`. Die Tabelle markiert
+außerdem einen Teil ihres Inhalts als „derzeit nicht unterstützt"; welchen, ist
+auf dem verfügbaren Foto nicht zu erkennen.
 
 ---
 
