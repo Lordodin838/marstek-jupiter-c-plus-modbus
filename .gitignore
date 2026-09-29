@@ -2,6 +2,8 @@
 # Keep the curated ones in dumps/ and ignore working output.
 tools/regdump_*.json
 tools/regdump_*.txt
+tools/benchmark_*.json
+tools/probe_*.json
 tools/last_run.log
 __pycache__/
 *.pyc
