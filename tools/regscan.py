@@ -403,6 +403,88 @@ class Bus:
 
         return None, "only foreign responses received"
 
+    def raw(self, pdu, unit=None, settle=0.15):
+        """Send an arbitrary PDU and hand back the answer, unparsed.
+
+        read() knows only function code 3. This is for asking the device
+        what else it understands -- device identification, coils, the
+        report-server-id call. Returns (pdu_bytes, None) or (None, reason).
+
+        In RTU mode the length of an answer to an unknown function cannot
+        be derived in advance, so bytes are collected until the line has
+        been quiet for `settle` seconds, then the checksum decides whether
+        what arrived is a whole frame.
+        """
+        unit = self.unit if unit is None else unit
+        self.reads += 1
+
+        if self.mode == "rtu":
+            self.drain()
+            frame = bytes([unit]) + pdu
+            frame += crc16(frame)
+            try:
+                self.sock.sendall(frame)
+            except OSError as exc:
+                self.connect()
+                return None, "send error: %s" % exc
+            buf = b""
+            deadline = time.time() + self.timeout
+            self.sock.settimeout(settle)
+            try:
+                while time.time() < deadline:
+                    try:
+                        chunk = self.sock.recv(512)
+                    except socket.timeout:
+                        if buf:
+                            break              # line went quiet, frame done
+                        continue
+                    if not chunk:
+                        break
+                    buf += chunk
+            except OSError as exc:
+                self.connect()
+                return None, "no response: %s" % exc
+            finally:
+                self.sock.settimeout(self.timeout)
+            if not buf:
+                self.rejects["timeout"] += 1
+                return None, "no response"
+            if len(buf) < 4 or crc16(buf[:-2]) != buf[-2:]:
+                self.rejects["crc"] += 1
+                return None, "crc error (%d bytes)" % len(buf)
+            if buf[0] != unit:
+                self.rejects["slave"] += 1
+                return None, "answer from slave %d" % buf[0]
+            return buf[1:-2], None
+
+        # Modbus TCP
+        self.tid = (self.tid % 65530) + 1
+        tid = self.tid
+        req = struct.pack(">HHHB", tid, 0, len(pdu) + 1, unit) + pdu
+        try:
+            self.sock.sendall(req)
+        except OSError as exc:
+            self.connect()
+            return None, "send error: %s" % exc
+        try:
+            head = self._recv_exact(6)
+            rtid, pid, length = struct.unpack(">HHH", head)
+            if length < 2 or length > 260:
+                self.connect()
+                return None, "implausible length %d" % length
+            body = self._recv_exact(length)
+        except (OSError, ConnectionError) as exc:
+            self._blame(exc)
+            self.connect()
+            return None, "no response: %s" % exc
+        if rtid != tid or pid != 0:
+            self.rejects["foreign_tid"] += 1
+            return None, "foreign answer"
+        if body[0] != unit:
+            self.rejects["slave"] += 1
+            return None, "answer from slave %d" % body[0]
+        return body[1:], None
+
     def read(self, addr, count):
         """Read with retries. Exceptions are NOT retried -- they are a
         genuine statement by the device, not a glitch."""
@@ -646,6 +728,145 @@ def scan(bus, sweep=False, fast=False):
             entry["notes"] = sorted(notes[a])
         out["0x%04X" % a] = entry
     return out, sweep_hits
+
+
+# Read-only function codes worth asking about, with the PDU to send.
+# FC8 (diagnostics) is deliberately absent: its sub-functions include
+# "restart communications", which is not something to try blindly on an
+# inverter wired into a house.
+PROBES = [
+    (0x01, b"\x01\x00\x00\x00\x08", "read coils 0x0000-0x0007"),
+    (0x02, b"\x02\x00\x00\x00\x08", "read discrete inputs 0x0000-0x0007"),
+    (0x04, b"\x04\x00\x10\x00\x01", "read input register 0x0010"),
+    (0x11, b"\x11", "report server id"),
+    (0x2B, b"\x2b\x0e\x01\x00", "read device identification (basic)"),
+    (0x2B, b"\x2b\x0e\x02\x00", "read device identification (regular)"),
+]
+
+EXCEPTION_TEXT = {
+    1: "function not supported",
+    2: "illegal address",
+    3: "illegal value",
+    4: "device failure",
+    11: "gateway target failed to respond",
+}
+
+
+def _printable(data):
+    """ASCII where it is ASCII, hex where it is not."""
+    text = "".join(chr(b) if 32 <= b < 127 else "." for b in data)
+    return "%s   |%s|" % (data.hex(" "), text)
+
+
+MEI_NAMES = {0: "vendor", 1: "product code", 2: "version",
+             3: "vendor url", 4: "product name", 5: "model name",
+             6: "application name"}
+
+
+def decode_mei(data):
+    """FC43/14 answer -> {name: text}. The point of asking at all."""
+    if len(data) < 7:
+        return None
+    count = data[6]
+    out, pos = {}, 7
+    for _ in range(count):
+        if pos + 2 > len(data):
+            break
+        oid, length = data[pos], data[pos + 1]
+        value = data[pos + 2:pos + 2 + length]
+        out[MEI_NAMES.get(oid, "object %d" % oid)] = \
+            value.decode("ascii", "replace")
+        pos += 2 + length
+    return out or None
+
+
+def decode_server_id(data):
+    """FC17 answer -> the identifier, and whether the device calls itself
+    running. The trailing byte is 0xFF for ON, 0x00 for OFF."""
+    if len(data) < 2:
+        return None
+    payload = data[2:2 + data[1]]
+    state = None
+    if payload and payload[-1] in (0x00, 0xFF):
+        state = "running" if payload[-1] == 0xFF else "stopped"
+        payload = payload[:-1]
+    text = payload.decode("ascii", "replace").strip("\x00").strip()
+    out = {"id": text or payload.hex()}
+    if state:
+        out["state"] = state
+    return out
+
+
+def probe(bus, units=True):
+    """Ask what else this device answers to.
+
+    Two questions the register scan cannot reach:
+
+    1. Other function codes. The whole map here was built with FC3 alone.
+       FC1 and FC2 address a COMPLETELY SEPARATE space -- that holding
+       registers exist says nothing about coils. FC17 and FC43 return
+       manufacturer strings and are read-only by definition.
+
+    2. Other unit IDs. Everything assumes slave address 1, but 0x4004 is a
+       writable device id according to Marstek's own table, so "1" is an
+       assumption, not a measurement.
+
+    Nothing here writes. Unit 0 is the broadcast address and is skipped.
+    """
+    print("Function codes, unit %d:" % bus.unit, flush=True)
+    findings = {"functions": {}, "units": []}
+    for code, pdu, what in PROBES:
+        data, note = bus.raw(pdu)
+        key = "0x%02X %s" % (code, what)
+        if data is None:
+            print("  %-46s -- %s" % (key, note))
+            findings["functions"][key] = {"answer": None, "note": note}
+            continue
+        if data[0] & 0x80:
+            exc = data[1] if len(data) > 1 else 0
+            text = EXCEPTION_TEXT.get(exc, "exception %d" % exc)
+            print("  %-46s -- exception %d (%s)" % (key, exc, text))
+            findings["functions"][key] = {"answer": None, "exception": exc,
+                                          "note": text}
+            continue
+        entry = {"answer": data.hex()}
+        decoded = None
+        if code == 0x2B:
+            decoded = decode_mei(data)
+        elif code == 0x11:
+            decoded = decode_server_id(data)
+        if decoded:
+            entry["decoded"] = decoded
+            print("  %-46s ->" % key)
+            for k, v in decoded.items():
+                print("  %46s    %-14s %s" % ("", k + ":", v))
+        else:
+            print("  %-46s -> %s" % (key, _printable(data)))
+        findings["functions"][key] = entry
+
+    if not units:
+        return findings
+
+    print("\nUnit IDs 1-247, one read of 0x0010 each "
+          "(this takes a while on silence):", flush=True)
+    hits = []
+    for unit in range(1, 248):
+        data, note = bus.raw(b"\x03\x00\x10\x00\x01", unit=unit)
+        if data is not None and not (data[0] & 0x80):
+            hits.append(unit)
+            print("  unit %3d answers: %s" % (unit, _printable(data)),
+                  flush=True)
+        elif data is not None:
+            hits.append(unit)
+            print("  unit %3d answers with an exception -- it exists"
+                  % unit, flush=True)
+        if unit % 50 == 0:
+            print("  ... %d/247" % unit, flush=True)
+        time.sleep(DELAY)
+    findings["units"] = hits
+    print("\nAnswering unit IDs: %s"
+          % (", ".join(str(u) for u in hits) or "none"))
+    return findings
 
 
 def benchmark(bus, rounds, label=""):
@@ -926,6 +1147,15 @@ def main():
                          "and watch the link quality tally at the end -- "
                          "that is how you find your gateway's real limit"
                          % DELAY)
+    ap.add_argument("--probe", action="store_true",
+                    help="do not scan: ask the device which other function "
+                         "codes it answers (coils, discrete inputs, report "
+                         "server id, device identification) and which unit "
+                         "IDs respond. Read-only throughout; FC8 is left "
+                         "out on purpose")
+    ap.add_argument("--no-units", action="store_true",
+                    help="with --probe: skip the unit-ID sweep, which is the "
+                         "slow half")
     ap.add_argument("--benchmark", type=int, metavar="ROUNDS", nargs="?",
                     const=20,
                     help="do not scan: read the known blocks ROUNDS times "
@@ -974,6 +1204,22 @@ def main():
         print("Check the address, and that the gateway is reachable from")
         print("this machine. Nothing was read, nothing was written.")
         return 1
+    if args.probe:
+        try:
+            found = probe(bus, units=not args.no_units)
+        finally:
+            bus.close()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        name = "probe_%s_%s.json" % (args.label, stamp) if args.label \
+            else "probe_%s.json" % stamp
+        path = os.path.join(OUTDIR, name)
+        with open(path, "w") as fh:
+            json.dump({"created": datetime.now().isoformat(timespec="seconds"),
+                       "host": args.host, "mode": bus.mode,
+                       "unit": args.unit, "findings": found}, fh, indent=1)
+        print("written:\n  %s" % path)
+        return 0
+
     if args.benchmark:
         try:
             benchmark(bus, args.benchmark, args.label)

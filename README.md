@@ -180,7 +180,15 @@ python3 regscan.py --label before-update      # snapshot
 python3 regscan.py --sweep                    # also sweep 0x0000-0xFFFF
 python3 regscan.py --diff before-update.json  # compare against a snapshot
 python3 regscan.py --rtu                      # Modbus RTU over TCP
+python3 regscan.py --probe                    # what else does it answer?
 ```
+
+`--probe` asks the device about the things a register scan cannot reach: other
+function codes (coils and discrete inputs are a **separate address space** --
+that holding registers exist says nothing about them), the two identification
+calls that return manufacturer strings, and which unit IDs answer at all. Read-
+only throughout; FC8 is left out deliberately, because its sub-functions include
+restarting the communications module.
 
 Every run prints a tally of *why* reads were discarded, so a change to the
 setup can be judged by a number rather than an impression;

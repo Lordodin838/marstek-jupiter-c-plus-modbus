@@ -76,57 +76,90 @@ class Device:
         return self.n % self.corrupt == 0
 
 
+SERVER_ID = b"\x0aJupiterC+\xff"      # Laenge, Kennung, Run-Indicator
+
+# FC43/14: Hersteller, Produkt, Version -- so wie ein Geraet es liefern wuerde,
+# das Read Device Identification beherrscht.
+MEI_OBJECTS = {0: b"Marstek", 1: b"Jupiter C Plus", 2: b"142.37.213.110"}
+
+
+def handle(dev, pdu):
+    """Ein PDU rein, ein PDU raus. None heisst: gar nicht antworten."""
+    if not pdu:
+        return None
+    func = pdu[0]
+
+    if func == 3:
+        if len(pdu) < 5:
+            return None
+        addr, count = struct.unpack(">HH", pdu[1:5])
+        exc, vals = dev.answer(addr, count)
+        if exc is SCHWEIGEN:
+            return None
+        if exc:
+            return struct.pack(">BB", func | 0x80, exc)
+        return struct.pack(">BB", func, count * 2) + \
+            struct.pack(">%dH" % count, *vals)
+
+    if func == 0x11:                      # Report Server ID
+        return bytes([func, len(SERVER_ID)]) + SERVER_ID
+
+    if func == 0x2B and len(pdu) >= 4 and pdu[1] == 0x0E:
+        # Read Device Identification, nur Basisdaten
+        body = bytes([0x2B, 0x0E, pdu[2], 0x01, 0x00, 0x00, len(MEI_OBJECTS)])
+        for oid in sorted(MEI_OBJECTS):
+            val = MEI_OBJECTS[oid]
+            body += bytes([oid, len(val)]) + val
+        return body
+
+    # Alles andere kennt das Geraet nicht -- genau wie FC4 am echten Jupiter.
+    return bytes([func | 0x80, 1])
+
+
 def serve_rtu(conn, dev):
     buf = b""
     while True:
-        chunk = conn.recv(256)
+        chunk = conn.recv(512)
         if not chunk:
             return
         buf += chunk
-        while len(buf) >= 8:
-            req, buf = buf[:8], buf[8:]
-            if crc16(req[:6]) != req[6:8]:
-                continue                      # stilles Verwerfen, wie am Bus
-            slave, func, addr, count = struct.unpack(">BBHH", req[:6])
-            if slave != dev.unit or func != 3:
-                continue
-            exc, vals = dev.answer(addr, count)
-            if exc is SCHWEIGEN:
-                continue                      # gar nicht antworten
-            if exc:
-                body = struct.pack(">BBB", slave, func | 0x80, exc)
-            else:
-                body = struct.pack(">BBB", slave, func, count * 2)
-                body += struct.pack(">%dH" % count, *vals)
-            frame = body + crc16(body)
+        while len(buf) >= 4:
+            if crc16(buf[:-2]) != buf[-2:]:
+                break                         # noch unvollstaendig
+            frame, buf = buf, b""
+            if frame[0] != dev.unit:
+                break                         # nicht fuer uns: schweigen
+            answer = handle(dev, frame[1:-2])
+            if answer is None:
+                break
+            body = bytes([dev.unit]) + answer
+            out = body + crc16(body)
             if dev.should_corrupt():
-                frame = frame[:-1] + bytes([frame[-1] ^ 0xFF])
-            conn.sendall(frame)
+                out = out[:-1] + bytes([out[-1] ^ 0xFF])
+            conn.sendall(out)
 
 
 def serve_tcp(conn, dev):
     buf = b""
     while True:
-        chunk = conn.recv(256)
+        chunk = conn.recv(512)
         if not chunk:
             return
         buf += chunk
-        while len(buf) >= 12:
-            req, buf = buf[:12], buf[12:]
-            tid, pid, ln, slave, func, addr, count = struct.unpack(
-                ">HHHBBHH", req)
-            if slave != dev.unit or func != 3:
+        while len(buf) >= 8:
+            tid, pid, ln = struct.unpack(">HHH", buf[:6])
+            if len(buf) < 6 + ln:
+                break
+            unit = buf[6]
+            pdu, buf = buf[7:6 + ln], buf[6 + ln:]
+            if unit != dev.unit:
+                continue                      # schweigen, wie am Bus
+            answer = handle(dev, pdu)
+            if answer is None:
                 continue
-            exc, vals = dev.answer(addr, count)
-            if exc is SCHWEIGEN:
-                continue                      # gar nicht antworten
-            if exc:
-                body = struct.pack(">BBB", slave, func | 0x80, exc)
-            else:
-                body = struct.pack(">BBB", slave, func, count * 2)
-                body += struct.pack(">%dH" % count, *vals)
+            body = bytes([unit]) + answer
             if dev.should_corrupt():
-                tid = (tid + 1) & 0xFFFF      # fremde Antwort vortaeuschen
+                tid = (tid + 1) & 0xFFFF
             conn.sendall(struct.pack(">HHH", tid, 0, len(body)) + body)
 
 

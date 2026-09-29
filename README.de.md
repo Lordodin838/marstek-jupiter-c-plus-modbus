@@ -188,7 +188,15 @@ python3 regscan.py --label vor-update         # Abzug anlegen
 python3 regscan.py --sweep                    # zusätzlich 0x0000-0xFFFF absuchen
 python3 regscan.py --diff vor-update.json     # gegen einen Abzug halten
 python3 regscan.py --rtu                      # Modbus RTU over TCP
+python3 regscan.py --probe                    # worauf antwortet es sonst?
 ```
+
+`--probe` fragt das Gerät nach dem, was ein Registerscan nicht erreicht: andere
+Funktionscodes (Coils und Discrete Inputs sind ein **eigener Adressraum** — dass
+Holding Register belegt sind, sagt darüber nichts), die beiden Aufrufe zur
+Gerätekennung, die Herstellerangaben im Klartext liefern, und welche Unit-IDs
+überhaupt antworten. Durchweg nur lesend; FC8 bleibt bewusst draußen, weil zu
+seinen Unterfunktionen der Neustart des Kommunikationsmoduls gehört.
 
 Jeder Lauf zählt mit, *warum* Antworten verworfen wurden — eine Änderung am
 Aufbau lässt sich so an einer Zahl beurteilen statt am Gefühl; `--benchmark`
