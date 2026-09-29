@@ -62,6 +62,7 @@ class Device:
         self.busy = busy
         self.busy_until = 0.0
         self.no_ident = False
+        self.exc11 = None     # Sekunden bis zur Gateway-Ausnahme, sonst Stille
 
     def mark_silence(self):
         if self.busy:
@@ -175,12 +176,22 @@ def serve_tcp(conn, dev):
             pdu, buf = buf[7:6 + ln], buf[6 + ln:]
             if dev.is_busy():
                 continue                      # Gateway haengt noch
-            if unit != dev.unit:
-                dev.mark_silence()
-                continue                      # schweigen, wie am Bus
-            answer = handle(dev, pdu)
+            answer = handle(dev, pdu) if unit == dev.unit else None
             if answer is None:
                 dev.mark_silence()
+                if dev.exc11 is not None:
+                    # Gateway gibt nach seiner eigenen Wartezeit auf und
+                    # meldet das: Exception 11, "target failed to respond".
+                    func = pdu[0] if pdu else 3
+                    body = bytes([unit, func | 0x80, 0x0B])
+                    frame = struct.pack(">HHH", tid, 0, len(body)) + body
+
+                    def spaeter(c=conn, f=frame):
+                        try:
+                            c.sendall(f)
+                        except OSError:
+                            pass
+                    threading.Timer(dev.exc11, spaeter).start()
                 continue
             body = bytes([unit]) + answer
             if dev.should_corrupt():
@@ -202,6 +213,10 @@ def main():
     ap.add_argument("--no-ident", action="store_true",
                     help="FC17 und FC43 unbeantwortet lassen, wie es hinter "
                          "dem EE11 im Modbus-Modus beobachtet wurde")
+    ap.add_argument("--exc11", type=float, default=None,
+                    help="statt zu schweigen nach so vielen Sekunden mit "
+                         "Exception 11 antworten - bildet ein Gateway mit "
+                         "fest eingestellter Modbus-Wartezeit nach (nur TCP)")
     ap.add_argument("--busy", type=float, default=0.0,
                     help="nach einer unbeantworteten Anfrage so viele "
                          "Sekunden besetzt bleiben und neue Verbindungen "
@@ -212,6 +227,9 @@ def main():
     dev = Device(args.unit, args.corrupt, silent=not args.exceptions,
                  busy=args.busy)
     dev.no_ident = args.no_ident
+    dev.exc11 = args.exc11
+    if args.exc11 is not None and not args.busy:
+        dev.busy = args.exc11          # besetzt, bis es aufgibt
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", args.port))

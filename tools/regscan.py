@@ -485,6 +485,18 @@ class Bus:
             return None, "answer from slave %d" % body[0]
         return body[1:], None
 
+    def send_only(self, pdu, unit=None):
+        """Put a request on the wire and walk away. Used by the calibration
+        to reproduce a client that gives up early."""
+        unit = self.unit if unit is None else unit
+        if self.mode == "rtu":
+            frame = bytes([unit]) + pdu
+            frame += crc16(frame)
+        else:
+            self.tid = (self.tid % 65530) + 1
+            frame = struct.pack(">HHHB", self.tid, 0, len(pdu) + 1, unit) + pdu
+        self.sock.sendall(frame)
+
     def read(self, addr, count):
         """Read with retries. Exceptions are NOT retried -- they are a
         genuine statement by the device, not a glitch."""
@@ -955,6 +967,164 @@ def probe(bus, units=True):
     return findings
 
 
+DEAD_ADDRESS = 0x0026   # documented as non-existent on the Jupiter C Plus
+LIVE_ADDRESS = 0x0010   # state of charge, always present
+
+
+def calibrate(host, port, unit, mode):
+    """Measure how long the gateway itself waits on the bus.
+
+    Every dead address in a scan costs exactly that long, and a client
+    timeout below it makes the gateway refuse the next connection -- the
+    failure that made the first unit sweep on 29.09.2026 report "none".
+    Three measurements:
+
+      A  how fast a real register answers (lower bound for any timeout)
+      B  what a dead request produces: silence, or an exception from the
+         gateway after its own wait (exception 11, "target failed to
+         respond"), and after how long
+      C  how long the gateway stays busy after a request the client gave
+         up on: reconnect after d seconds and see whether it lets you in
+    """
+    live_pdu = struct.pack(">BHH", 3, LIVE_ADDRESS, 1)
+    dead_pdu = struct.pack(">BHH", 3, DEAD_ADDRESS, 1)
+    result = {"mode": mode, "unit": unit}
+
+    def fresh(timeout):
+        return Bus(host, port, unit, timeout, mode=mode)
+
+    # A -- latency of a live register
+    print("A  Response time of a live register (0x%04X), 10 reads:"
+          % LIVE_ADDRESS, flush=True)
+    bus = fresh(5.0)
+    times = []
+    for _ in range(10):
+        t0 = time.time()
+        data, note = bus.raw(live_pdu)
+        if data is not None and not data[0] & 0x80:
+            times.append(time.time() - t0)
+        time.sleep(0.2)
+    bus.close()
+    if not times:
+        print("   no answer at all -- check host, unit and that no other "
+              "client holds the gateway.")
+        result["error"] = "live register did not answer"
+        return result
+    times.sort()
+    lat = {"min": times[0], "median": times[len(times) // 2],
+           "max": times[-1], "n": len(times)}
+    result["latency"] = lat
+    print("   %d/10 answered, min %.0f ms, median %.0f ms, max %.0f ms"
+          % (lat["n"], 1000 * lat["min"], 1000 * lat["median"],
+             1000 * lat["max"]), flush=True)
+
+    # B -- what does a dead request produce?
+    time.sleep(3)
+    print("\nB  A request to a dead address (0x%04X), waiting up to 10 s:"
+          % DEAD_ADDRESS, flush=True)
+    bus = fresh(10.0)
+    t0 = time.time()
+    data, note = bus.raw(dead_pdu)
+    waited = time.time() - t0
+    bus.close()
+    if data is not None and data[0] & 0x80:
+        code = data[1] if len(data) > 1 else 0
+        result["dead"] = {"answer": "exception", "code": code,
+                          "after": waited}
+        print("   exception %d (%s) after %.2f s"
+              % (code, EXCEPTION_TEXT.get(code, "?"), waited), flush=True)
+    elif data is not None:
+        result["dead"] = {"answer": "value", "after": waited}
+        print("   a VALUE came back after %.2f s -- 0x%04X is not dead on "
+              "this device, or an answer went astray" % (waited, DEAD_ADDRESS))
+    else:
+        result["dead"] = {"answer": "silence", "after": waited, "note": note}
+        print("   silence for %.1f s (%s)" % (waited, note), flush=True)
+
+    # C -- busy window after an abandoned request
+    time.sleep(4)
+    print("\nC  Gateway busy time: send a dead request, walk away, reconnect "
+          "after d seconds:", flush=True)
+    delays = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
+    table = []
+    streak = 0
+    for d in delays:
+        oks = 0
+        for _ in range(2):
+            try:
+                b1 = fresh(5.0)
+                b1.send_only(dead_pdu)
+                time.sleep(d)
+                b1.close()
+                b2 = fresh(3.0)
+                data, note = b2.raw(live_pdu)
+                b2.close()
+                if data is not None and not data[0] & 0x80:
+                    oks += 1
+            except OSError:
+                pass
+            time.sleep(max(4.0, d + 2.0))    # let everything reset
+        table.append({"delay": d, "ok": oks, "of": 2})
+        print("   d = %4.2f s   %d/2 let in" % (d, oks), flush=True)
+        streak = streak + 1 if oks == 2 else 0
+        if streak >= 2:
+            break
+    result["busy_table"] = table
+
+    # smallest d from which on everything worked
+    busy = None
+    for i, row in enumerate(table):
+        if all(r["ok"] == r["of"] for r in table[i:]):
+            busy = row["delay"]
+            break
+    result["busy_until"] = busy
+
+    # Recommendation
+    print("\nResult", flush=True)
+    floor = max(lat["max"] * 3, 0.3)
+    candidates = [floor]
+    if busy is not None:
+        candidates.append(busy * 1.5)
+    dead = result["dead"]
+    if dead["answer"] == "exception":
+        candidates.append(dead["after"] * 1.5)
+    rec = round(max(candidates) + 0.049, 1)
+    result["recommended_timeout"] = rec
+    if busy is None:
+        print("   The gateway did not let a client back in reliably within "
+              "%.0f s. Keep generous timeouts." % delays[-1])
+    else:
+        print("   Gateway busy after an abandoned request: about %.2f s"
+              % busy)
+    print("   Recommended --timeout: %.1f s" % rec)
+    if dead["answer"] == "exception":
+        cost0 = costR = dead["after"]
+        print("   A dead address is answered with exception %d after %.2f s."
+              % (dead["code"], dead["after"]))
+        print("   Exceptions are never retried, so that is its whole cost.")
+    else:
+        cost0 = rec
+        costR = rec * (RETRY + 1)
+        print("   A dead address stays silent: it costs the full timeout, "
+              "once per attempt.")
+        print("   Retries buy nothing here -- silence is the answer. For "
+              "mapping, use --retries 0;")
+        print("   the three read passes over every register found still "
+              "guard the values.")
+    result["cost_per_dead_address"] = {"retries_0": cost0,
+                                       "retries_default": costR}
+    for label_, cost, dly in (("--retries 0 --delay 0.1", cost0, 0.1),
+                              ("defaults (--retries %d --delay %.2f)"
+                               % (RETRY, DELAY), costR, DELAY)):
+        per = cost + dly
+        print("   %s:" % label_)
+        print("     thorough scan, 3 x 1024 addresses   ~%.0f min"
+              % (5900 * per / 60))
+        print("     every single register, 65536        ~%.1f h"
+              % (65536 * per / 3600))
+    return result
+
+
 def benchmark(bus, rounds, label=""):
     """Read the known blocks over and over and report the link quality.
 
@@ -1233,6 +1403,11 @@ def main():
                          "and watch the link quality tally at the end -- "
                          "that is how you find your gateway's real limit"
                          % DELAY)
+    ap.add_argument("--calibrate", action="store_true",
+                    help="do not scan: measure how fast a live register "
+                         "answers, what a dead request produces, and how "
+                         "long the gateway stays busy afterwards -- then "
+                         "recommend a --timeout and estimate scan times")
     ap.add_argument("--probe", action="store_true",
                     help="do not scan: ask the device which other function "
                          "codes it answers (coils, discrete inputs, report "
@@ -1281,6 +1456,19 @@ def main():
     DELAY = args.delay
     TIMEOUT = args.timeout
     RETRY = args.retries
+
+    if args.calibrate:
+        res = calibrate(args.host, args.port, args.unit,
+                        "rtu" if args.rtu else "tcp")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        name = "calibrate_%s_%s.json" % (args.label, stamp) if args.label \
+            else "calibrate_%s.json" % stamp
+        path = os.path.join(OUTDIR, name)
+        with open(path, "w") as fh:
+            json.dump(dict(res, created=datetime.now().isoformat(
+                timespec="seconds"), host=args.host), fh, indent=1)
+        print("written:\n  %s" % path)
+        return 0
 
     try:
         bus = Bus(args.host, args.port, args.unit, TIMEOUT,

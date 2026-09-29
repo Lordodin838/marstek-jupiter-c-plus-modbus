@@ -4,6 +4,7 @@ tools/regdump_*.json
 tools/regdump_*.txt
 tools/benchmark_*.json
 tools/probe_*.json
+tools/calibrate_*.json
 tools/last_run.log
 __pycache__/
 *.pyc
