@@ -56,8 +56,8 @@ diesem Gerät hat `0x0001`–`0x0007` komplett übersehen, weil der Rasterblock 
 `0x0000` begann und `0x0000` nicht existiert. Genauso fielen `0x1008`–`0x100A`
 heraus, weil dieser Block bis `0x100F` gereicht hätte.
 
-Die Abhilfe: fehlgeschlagene Blöcke bis auf Einzelregister hinunter halbieren.
-Genau das tut [`regscan.py`](../tools/regscan.py), und nur deshalb wurde `0x002A`
+Die Abhilfe: einen gescheiterten Block Register für Register abfragen. Genau
+das tut [`regscan.py`](../tools/regscan.py), und nur deshalb wurde `0x002A`
 überhaupt gefunden.
 
 ### 3. FC4 wird nicht unterstützt
@@ -202,45 +202,98 @@ der, dessentwegen man umstellt.
 
 ### Was `--fast` im Scanner absichtlich falsch macht
 
-Die Grenzsuche halbiert scheiternde Blöcke bis hinunter zum Einzelregister. Nur
+Die Grenzsuche fragt einen scheiternden Block Register für Register ab. Nur
 so findet man ein Register, das isoliert zwischen toten Nachbarn sitzt —
 `0x002A` ist genau dieser Fall.
 
 `--fast` überspringt einen toten 8er-Block, nachdem nur dessen beide Enden
-geprüft wurden. Das ist rund dreimal schneller und **verliert `0x002A`
-stillschweigend**; ein Lauf gegen ein simuliertes Gerät hat das bestätigt: 60
+geprüft wurden. Bei einem Gerät, das tote Adressen mit Exception 2 ablehnt, ist
+das deutlich schneller — und **verliert `0x002A` stillschweigend**; ein Lauf gegen ein simuliertes Gerät hat das bestätigt: 60
 Register statt 61. Schlimmer noch, die sechs Adressen dazwischen standen bisher
 als `exception 2` im Abzug, obwohl das Gerät dazu nie befragt wurde. Jetzt steht
 dort `not probed (--fast)`.
 
 `--fast` taugt für eine grobe Grenzprüfung. Nicht für einen Abzug, den du später
-vergleichen willst.
+vergleichen willst. Beim Jupiter C Plus bewirkt es gar nichts, weil das Gerät
+nie mit Exception 2 antwortet — siehe den nächsten Abschnitt.
 
 ### Was ein vollständiger Scan wirklich kostet, und warum
 
 **Eine nicht vorhandene Adresse antwortet bei diesem Gerät gar nicht.** Sie
 liefert keine Exception 2 — sie schweigt, und die Abzüge halten das als
 `keine Antwort: timed out` fest. Jede Probe im Leeren kostet damit einen vollen
-Timeout, mal Anzahl der Wiederholungen.
+Timeout, mal Anzahl der Versuche.
 
-Diese eine Tatsache bestimmt die Laufzeit, und man verrechnet sich leicht, wenn
-man von einem Testgerät ausgeht, das mit einer Exception antwortet:
+**Und nach so einer Anfrage braucht das Gerät rund zwei Sekunden, bevor es die
+nächste annimmt** (gemessen, siehe unten). Ein kürzerer Client-Timeout
+verschwendet dann nicht nur Zeit: die nächste Anfrage kommt an, während das
+Gerät noch beschäftigt ist, und bei einem Gateway, das nur einen Client zulässt,
+wird die neue Verbindung abgewiesen. Der Scan verliert dann Register, ohne es zu
+merken.
 
-| Einstellungen | Kosten je toter Adresse | Gründlicher Scan über 3 × 1024 Adressen |
+Der Timeout hat also eine Untergrenze, und die ist nicht klein:
+
+| Einstellungen | Kosten je toter Adresse | Gründlicher Scan, 3 × 1024 Adressen |
 |---|---|---|
-| `--timeout 4 --retries 2 --delay 0.45` (Standard) | ~13 s | **~15 Stunden** |
-| `--timeout 1 --retries 1 --delay 0.2` | ~2,4 s | ~4 Stunden |
-| dasselbe plus `--fast` | ~2,4 s | ~45 Minuten |
+| Standard: `--timeout 4 --retries 2 --delay 0.45` | ~13 s | ~13 Stunden |
+| kalibriert: `--timeout 4.5 --retries 0 --delay 0.1` | ~4,6 s | **~4,4 Stunden** |
 
-Die Standardwerte sind bewusst vorsichtig, nicht schnell. Für eine
-vollständige Karte den Timeout senken: ein vorhandenes Register antwortet
-deutlich unter 100 ms, ein kurzer Timeout kostet dort also nichts.
+Wiederholungen bringen bei einer schweigenden Adresse nichts — die Stille ist die
+Antwort. Die drei Lesedurchgänge über jedes gefundene Register sichern die
+Werte trotzdem ab.
 
-**Und um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Über
-90 % der Scanzeit vergehen mit Warten auf Register, die es nie gab — das sagt
-über die Verbindung nichts. `--benchmark` liest stattdessen die bekannten
-Blöcke immer wieder: Minuten statt Stunden, und es bildet ab, was ein Client im
-Alltag tut.
+`--fast` hat bei diesem Gerät **keine Wirkung**: die Abkürzung braucht Exception 2,
+und der Jupiter schweigt stattdessen. Eine frühere Fassung dieser Seite hat damit
+rund 45 Minuten versprochen. Das war falsch.
+
+Ein Einzelregister-Durchlauf über alle 65536 Adressen würde mit den
+kalibrierten Werten rund 84 Stunden dauern. Deshalb ist er nicht gemacht worden.
+
+**Um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Fast die
+gesamte Scanzeit vergeht mit Warten auf Register, die es nie gab — das sagt über
+die Verbindung nichts. `--benchmark` liest stattdessen die bekannten Blöcke immer
+wieder: Minuten statt Stunden, und es bildet ab, was ein Client im Alltag tut.
+
+---
+
+## Gemessene Zeiten, 29. September 2026
+
+`regscan.py --calibrate` misst drei Dinge: wie schnell ein echtes Register
+antwortet, was eine Anfrage an eine tote Adresse auslöst, und wie bald danach ein
+neuer Client wieder eine echte Antwort bekommt. Zweimal gelaufen, einmal mit
+`Modbus TimeOut` am EE11 auf *Auto*, einmal mit festen 1000 ms:
+
+| | Auto | fest 1000 ms |
+|---|---|---|
+| Antwortzeit eines echten Registers, Median | 219 ms | 512 ms |
+| Antwortzeit eines echten Registers, maximal | 330 ms | 620 ms |
+| Anfrage an die tote Adresse `0x0026` | Stille, 10 s | Stille, 10 s — **keine Exception 11** |
+| Nächste echte Antwort möglich nach | 2–3 s | 1,5–2 s |
+
+**Die Zeit braucht das Gerät, nicht das Gateway.** Hätte das Gateway gebremst,
+hätten feste 1000 ms die Besetzt-Zeit auf etwa eine Sekunde gedrückt. Sie blieb
+bei rund zwei. Eine zweite Beobachtung zeigt in dieselbe Richtung: der
+Unit-Durchlauf hat 245 nicht vorhandene Unit-IDs mit 2 s Timeout abgefragt, und
+keine einzige neue Verbindung wurde abgewiesen. Eine Anfrage an niemanden
+beschäftigt den Jupiter nicht; eine Anfrage an ihn, nach einem Register, das er
+nicht hat, sehr wohl.
+
+**Deshalb hat der 5-s-Timeout weiter oben geholfen.** Ein Client-Timeout von 3 s
+stand genau auf der Kante einer Besetzt-Zeit von 2–3 s — manchmal genug, unter Last
+oft nicht. 5 s lagen sicher darüber. Die Abhilfe wurde im September ausprobiert;
+das hier ist der Mechanismus dahinter.
+
+**`Modbus TimeOut` auf Auto lassen.** Ein fester Wert brachte keine Exception 11,
+keine kürzere Besetzt-Zeit, dafür langsamere und unruhigere Antworten — mit
+620 ms bedenklich nah an der 1000-ms-Grenze, jenseits derer der Konverter eine
+echte Antwort verwerfen würde. Zehn Messungen beweisen nicht, dass der feste
+Wert die Verlangsamung verursacht hat, aber auf der anderen Seite der Waage liegt
+nichts.
+
+Was das am Scanner geändert hat: scheitert ein Block, geht er jetzt direkt auf
+Einzelregister, statt 8 → 4 → 2 → 1 zu halbieren. Ein toter 8er-Block kostet 9
+Proben statt 15, das Ergebnis ist identisch, `0x002A` eingeschlossen. Am
+Testgerät: 3454 statt 5700 Anfragen für den gründlichen Scan.
 
 ---
 

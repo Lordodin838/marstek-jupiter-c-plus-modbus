@@ -33,7 +33,7 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 ## Inhaltsverzeichnis
 
 - [Stand](#stand) — was gemessen wurde, an welchem Gerät und welcher Firmware
-- [Neue Befunde](#neue-befunde) — die drei Register, die in keiner anderen Karte stehen
+- [Neue Befunde](#neue-befunde) — drei Register und eine zweite Unit-Adresse, die in keiner anderen Karte stehen
 - [Korrekturen an der bekannten Karte](#korrekturen-an-der-bekannten-karte)
 - [Vollständige Registerkarte](#vollständige-registerkarte) — jede Adresse mit Sicherheitsangabe
 - [Inhalt](#inhalt) — Scanner, Home-Assistant-Package, Dumps
@@ -48,8 +48,8 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 | Gerät | Jupiter C Plus, 800 W (Gerätetyp-Register `0x0025` = 0) |
 | Firmware | `142.37.213.110` (EMS 142 / BMS 37 / MPPT 213 / INV 110) |
 | Zusätzlich geprüft auf | `138.37.213.110` — Registerkarte byteweise identisch |
-| Anbindung | RS485 → Elfin EE11 → Modbus TCP, Unit 1, 115200 Bd |
-| Funktionscodes | Nur FC3 (Holding Register lesen). **FC4 wird nicht unterstützt** — das Gerät antwortet mit Exception 1 |
+| Anbindung | RS485 → Elfin EE11 → Modbus TCP, Unit 1 (antwortet auch auf **11**, siehe unten), 115200 Bd |
+| Funktionscodes | Nur FC3 (Holding Register lesen). **FC1, FC2 und FC4 werden nicht unterstützt** — Exception 1, es gibt also weder Coils noch Discrete Inputs. FC17 und FC43 bleiben über den EE11 unbeantwortet |
 | Umfang | Nur lesend. Nichts in diesem Repository schreibt ins Gerät |
 | Stichprobe | Ein Gerät. Alles hier gilt als „an einem Exemplar bestätigt" |
 | Jupiter E | Marsteks eigene Tabelle deckt C und E gemeinsam ab (Gerätetyp 3–5); die Karte dürfte dort ebenso gelten — an einem E wurde nicht gemessen |
@@ -58,7 +58,8 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 
 ## Neue Befunde
 
-Diese drei sind der Grund für dieses Repository. Keiner davon steht in
+Die ersten drei sind der Grund für dieses Repository; der vierte kam bei der
+Protokollabfrage am 29. September 2026 heraus. Keiner davon steht in
 [danielrahn/marstek-jupiter-c-plus](https://github.com/danielrahn/marstek-jupiter-c-plus),
 das ansonsten die beste öffentliche Karte für dieses Gerät ist.
 
@@ -117,6 +118,29 @@ Versionsnummern in `0x001B`–`0x001F` geführt wird. Sie ändert sich bei einem
 EMS-Update nicht — und ist damit die einzige Möglichkeit, überhaupt zu bemerken,
 dass Marstek stillschweigend einen neuen Stand des Kommunikationsmoduls
 ausgeliefert hat.
+
+### Unit-ID 11 — dasselbe Gerät unter einer zweiten Adresse
+
+Der Jupiter antwortet auf **Unit 1 und Unit 11**. Ein Durchlauf über alle
+Unit-IDs von 1 bis 247 hat genau diese beiden gefunden, mit Unit 1 als Kontrolle
+vor und nach dem Durchlauf. Dieselben Blöcke von beiden nebeneinander gelesen:
+
+| | Unit 1 | Unit 11 |
+|---|---|---|
+| MAC `0x1100`–`0x1105` | die MAC des Geräts | identisch, alle 12 Zeichen |
+| Kommunikationsmodul `0x1200`–`0x1205` | `202512040647` | `202512040647` |
+| Versionen `0x001B`–`0x001F` | 11 142 110 213 37 | identisch |
+| Funktionscodes 1, 2, 4, 17, 43 | wie oben unter Stand | identisch |
+
+Die Messwerte unterschieden sich nur so, wie zwei Sekunden auseinander gelesene
+Messwerte das tun. Es ist ein Gerät mit zwei Namen, keine zweite Komponente.
+Warum 11, und ob das mit der schreibbaren Geräte-ID in `0x4004` zusammenhängt,
+ist nicht bekannt — das herauszufinden hieße, ins Gerät zu schreiben.
+
+**Warum das zählt: kein anderes Gerät mit Adresse 11 an denselben RS485-Bus
+hängen.** Zwei Geräte, die auf dieselbe Anfrage antworten, überlagern ihre
+Telegramme — und heraus kommen genau die falschen Werte, bei denen man dann am
+Gateway nach dem Fehler sucht.
 
 ---
 

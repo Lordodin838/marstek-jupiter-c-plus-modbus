@@ -32,7 +32,7 @@ corrections to the boundaries of the known data block.
 ## Contents
 
 - [Status](#status) — what was measured, on which device and firmware
-- [New findings](#new-findings) — the three registers no other map has
+- [New findings](#new-findings) — three registers and a second unit address no other map has
 - [Corrections to the known map](#corrections-to-the-known-map)
 - [Full register map](#full-register-map) — every address with a confidence level
 - [What's in here](#whats-in-here) — scanner, Home Assistant package, dumps
@@ -47,8 +47,8 @@ corrections to the boundaries of the known data block.
 | Device | Jupiter C Plus, 800 W (device type register `0x0025` = 0) |
 | Firmware | `142.37.213.110` (EMS 142 / BMS 37 / MPPT 213 / INV 110) |
 | Also verified on | `138.37.213.110` — register map byte-for-byte identical |
-| Transport | RS485 → Elfin EE11 → Modbus TCP, unit 1, 115200 Bd |
-| Function codes | FC3 (read holding registers) only. **FC4 is not supported** — the device answers exception 1 |
+| Transport | RS485 → Elfin EE11 → Modbus TCP, unit 1 (also answers on **11**, see below), 115200 Bd |
+| Function codes | FC3 (read holding registers) only. **FC1, FC2 and FC4 are not supported** — exception 1, so there are no coils and no discrete inputs. FC17 and FC43 get no answer through the EE11 |
 | Scope | Read-only. Nothing in this repository writes to the device |
 | Sample size | One device. Treat everything as "confirmed on one unit" |
 | Jupiter E | Marstek's own table covers C and E together (device type 3–5), so this map is expected to hold there too — not measured on an E |
@@ -57,7 +57,8 @@ corrections to the boundaries of the known data block.
 
 ## New findings
 
-These three are the reason this repository exists. None of them appear in
+The first three are the reason this repository exists; the fourth came out of
+the protocol probe on 29 September 2026. None of them appear in
 [danielrahn/marstek-jupiter-c-plus](https://github.com/danielrahn/marstek-jupiter-c-plus),
 which is otherwise the best public map for this device.
 
@@ -112,6 +113,29 @@ This is the **communication module's** firmware, which is versioned separately
 from the four version numbers at `0x001B`–`0x001F`. It does not change when the
 EMS firmware is updated, so it is the only way to notice that Marstek has
 silently shipped a new comms module build.
+
+### Unit ID 11 — the same device under a second address
+
+The Jupiter answers on **unit 1 and unit 11**. A sweep of all unit IDs from 1
+to 247 found exactly these two, with unit 1 answering before and after the
+sweep as a control. Reading the same blocks from both side by side:
+
+| | unit 1 | unit 11 |
+|---|---|---|
+| MAC `0x1100`–`0x1105` | the device's MAC | identical, all 12 characters |
+| Comms module `0x1200`–`0x1205` | `202512040647` | `202512040647` |
+| Versions `0x001B`–`0x001F` | 11 142 110 213 37 | identical |
+| Function codes 1, 2, 4, 17, 43 | as in Status above | identical |
+
+Live values differed only as measurements two seconds apart do. It is one
+device with two names, not a second component. Why 11, and whether it relates
+to the writable device ID at `0x4004`, is not known — finding out would mean
+writing to the device.
+
+**Why it matters: do not put another device at address 11 on the same RS485
+bus.** Two devices answering the same request overlay their frames, and the
+result is exactly the kind of wrong value that sends you looking for a gateway
+problem.
 
 ---
 

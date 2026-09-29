@@ -55,7 +55,7 @@ device missed `0x0001`–`0x0007` entirely, because the grid block began at `0x0
 and `0x0000` does not exist. It also lost `0x1008`–`0x100A`, because that block
 would have run to `0x100F`.
 
-The fix is to halve failing blocks down to single registers. That is what
+The fix is to probe a failing block register by register. That is what
 [`regscan.py`](../tools/regscan.py) does, and it is why `0x002A` was found at all.
 
 ### 3. FC4 is not supported
@@ -194,43 +194,95 @@ failure it cannot detect is the one that motivates the switch.
 
 ### What the scanner's `--fast` flag gets wrong on purpose
 
-The boundary search halves failing blocks down to single registers. That is the
+The boundary search probes a failing block register by register. That is the
 only method that finds an isolated register with dead neighbours on both sides —
 `0x002A` is exactly that case.
 
-`--fast` skips a dead 8-register block after probing only its two ends. It is
-about three times quicker and **loses `0x002A` silently**, which a test run
+`--fast` skips a dead 8-register block after probing only its two ends. On a
+device that rejects dead addresses with exception 2 it is much quicker — and
+**loses `0x002A` silently**, which a test run
 against a simulated device confirmed: 60 registers instead of 61. Worse, the
 six addresses in between used to be written into the dump as `exception 2`
 although the device was never asked about them. They now read `not probed
 (--fast)` instead.
 
 Use `--fast` for a rough boundary check. Never for a dump you intend to diff.
+On the Jupiter C Plus it does nothing at all, because the device never answers
+with exception 2 — see the next section.
 
 ### What a full scan really costs, and why
 
 **A non-existent address on this device does not answer at all.** It does not
 return exception 2 — it stays silent, and the dumps record it as
 `keine Antwort: timed out`. Every probe of empty space therefore costs a full
-timeout, times the number of retries.
+timeout, times the number of attempts.
 
-That single fact dominates the runtime, and it is easy to get wrong if you
-reason from a simulator that answers with an exception:
+**And after such a request the device needs about two seconds before it takes
+the next one** (measured, see below). A client timeout shorter than that does
+not merely waste time: the next request arrives while the device is still
+busy, and on a gateway that admits one client the reconnect is refused. The
+scan then misses registers without saying so.
 
-| Settings | Cost per dead address | Thorough scan of 3 × 1024 addresses |
+So the timeout has a floor, and it is not small:
+
+| Settings | Cost per dead address | Thorough scan, 3 × 1024 addresses |
 |---|---|---|
-| `--timeout 4 --retries 2 --delay 0.45` (defaults) | ~13 s | **~15 hours** |
-| `--timeout 1 --retries 1 --delay 0.2` | ~2.4 s | ~4 hours |
-| as above plus `--fast` | ~2.4 s | ~45 minutes |
+| defaults: `--timeout 4 --retries 2 --delay 0.45` | ~13 s | ~13 hours |
+| calibrated: `--timeout 4.5 --retries 0 --delay 0.1` | ~4.6 s | **~4.4 hours** |
 
-The defaults are deliberately cautious, not fast. For a full map, lower the
-timeout: a register that exists answers in well under 100 ms, so a short
-timeout costs nothing on the addresses you actually care about.
+Retries buy nothing on a silent address — silence is the answer. The three
+read passes over every register that was found still guard the values.
 
-**And for judging a gateway change, do not scan at all.** Over 90 % of a scan's
+`--fast` has **no effect** on this device: its shortcut needs exception 2, and
+the Jupiter stays silent instead. An earlier version of this page promised
+about 45 minutes with it. That was wrong.
+
+A single-register sweep over all 65536 addresses would take roughly 84 hours at
+the calibrated setting. That is why it has not been done.
+
+**For judging a gateway change, do not scan at all.** Nearly all of a scan's
 time is spent waiting on registers that were never there, which says nothing
 about the link. `--benchmark` reads the known blocks over and over instead:
 minutes rather than hours, and it mirrors what a client does in daily use.
+
+---
+
+## Measured timing, 29 September 2026
+
+`regscan.py --calibrate` measures three things: how fast a real register
+answers, what a request to a dead address produces, and how soon after such a
+request a fresh client gets a real answer again. Run twice, once with the
+EE11's `Modbus TimeOut` on *Auto* and once with a fixed 1000 ms:
+
+| | Auto | fixed 1000 ms |
+|---|---|---|
+| Response time of a real register, median | 219 ms | 512 ms |
+| Response time of a real register, max | 330 ms | 620 ms |
+| Request to dead address `0x0026` | silence, 10 s | silence, 10 s — **no exception 11** |
+| Next real answer possible after | 2–3 s | 1.5–2 s |
+
+**The device, not the gateway, needs the time.** Had the gateway been holding
+things up, a fixed 1000 ms would have brought the busy time down to about a
+second. It stayed near two. A second observation points the same way: the unit
+sweep asked 245 non-existent unit IDs with a 2 s timeout and not one reconnect
+was refused. A request addressed to nobody does not occupy the Jupiter; a
+request addressed to it, for a register it does not have, does.
+
+**This is why the 5 s timeout above fixed things.** A 3 s client timeout sat
+right on the edge of a 2–3 s busy time — sometimes enough, under load often not.
+5 s cleared it. The fix was found by trial in September; this is the mechanism
+behind it.
+
+**Leave `Modbus TimeOut` on Auto.** A fixed value produced no exception 11, no
+shorter busy time, and slower, more scattered answers — at 620 ms uncomfortably
+close to the 1000 ms limit, beyond which the converter would drop a real answer.
+Ten measurements cannot prove the fixed value caused the slowdown, but there is
+nothing on the other side of the scale.
+
+What this changed in the scanner: when a block fails, it now goes straight to
+single registers instead of halving 8 → 4 → 2 → 1. A dead 8-block costs 9
+probes instead of 15, the result is identical, `0x002A` included. On the test
+device: 5700 requests down to 3454 for the thorough scan.
 
 ---
 

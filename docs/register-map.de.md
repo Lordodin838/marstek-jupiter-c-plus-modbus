@@ -251,6 +251,33 @@ Grobsuche über den vollen 16-Bit-Adressraum (`0x0000`–`0xFFFF`), zwei
 Einschränkung, klar gesagt: das findet Blöcke, keine Einzelgänger. `0x002A`
 beweist, dass es solche Register gibt. In den Lücken können weitere stecken.
 
+### Andere Funktionscodes
+
+`regscan.py --probe`, 29. September 2026, über den EE11 in der Betriebsart Modbus:
+
+| Code | Ergebnis |
+|---|---|
+| FC1 Coils lesen | Exception 1 — **keine Coils** |
+| FC2 Discrete Inputs lesen | Exception 1 — **keine Discrete Inputs** |
+| FC4 Input Register lesen | Exception 1 |
+| FC17 Report Server ID | keine Antwort |
+| FC43/14 Gerätekennung | keine Antwort |
+
+Coils und Discrete Inputs sind eigene Adressräume; dass Holding Register belegt
+sind, sagt über sie nichts. Jetzt ist es gemessen: das Gerät bietet Holding
+Register an und sonst nichts.
+
+FC17 und FC43 verschluckt höchstwahrscheinlich der Konverter, nicht das Gerät:
+dasselbe Gerät beantwortet FC1, FC2 und FC4 ordentlich mit „nicht unterstützt“,
+und ein Modbus-Stack, der das tut, beantwortet FC17 und FC43 üblicherweise
+genauso. Klären ließe es sich nur mit dem EE11 im transparenten Modus. Nicht
+gemacht.
+
+### Unit-IDs
+
+Das Gerät antwortet auf Unit **1 und 11**, ein Gerät unter zwei Adressen. Siehe
+[das README](../README.de.md#unit-id-11--dasselbe-gerät-unter-einer-zweiten-adresse).
+
 ---
 
 ## `0x0011` — Fehlercode

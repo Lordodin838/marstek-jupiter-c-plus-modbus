@@ -248,6 +248,32 @@ A coarse sweep of the full 16-bit address space (`0x0000`–`0xFFFF`), two
 Limitation, stated plainly: this finds blocks, not isolated registers. `0x002A`
 proves such registers exist. The gaps may hold more.
 
+### Other function codes
+
+`regscan.py --probe`, 29 September 2026, through the EE11 in Modbus mode:
+
+| Code | Result |
+|---|---|
+| FC1 read coils | exception 1 — **no coils** |
+| FC2 read discrete inputs | exception 1 — **no discrete inputs** |
+| FC4 read input registers | exception 1 |
+| FC17 report server id | no answer |
+| FC43/14 device identification | no answer |
+
+Coils and discrete inputs are separate address spaces; that holding registers
+exist says nothing about them. Now it is measured: the device offers holding
+registers and nothing else.
+
+FC17 and FC43 are most likely swallowed by the converter, not ignored by the
+device: the same device answers FC1, FC2 and FC4 properly with "not supported",
+and a Modbus stack that does that usually answers FC17 and FC43 the same way.
+Settling it would need the EE11 in transparent mode. Not done.
+
+### Unit IDs
+
+The device answers on unit **1 and 11**, one device under two addresses. See
+[the README](../README.md#unit-id-11--the-same-device-under-a-second-address).
+
 ---
 
 ## `0x0011` — fault code
