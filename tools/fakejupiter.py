@@ -11,17 +11,20 @@ Mit --corrupt N faellt jede N-te Antwort absichtlich kaputt aus: im RTU-Modus
 mit falscher Pruefsumme, im TCP-Modus mit fremder Transaktions-ID. Damit
 laesst sich pruefen, ob der Scanner das auch merkt.
 
-WICHTIG, --silent:
-    Das echte Geraet antwortet auf eine nicht vorhandene Adresse GAR NICHT,
-    es liefert keine Exception 2. Genau daran haengt die Laufzeit eines
-    vollstaendigen Scans: jede tote Adresse kostet einen Timeout statt einer
-    sofortigen Absage. Ein Testgeraet, das brav mit Exception antwortet, ist
-    in Sekunden durch und verleitet zu Laufzeitschaetzungen, die um den
-    Faktor 20 danebenliegen. Genau das ist am 29.09.2026 passiert.
+Tote Adressen, wie am echten Geraet gemessen (29.09.2026, Unit 1 und 11):
+    Fast jede nicht vorhandene Adresse wird sofort mit Exception 2
+    abgelehnt, in rund 0,2 s. Nur die vier Adressen 0x0026-0x0029 zwischen
+    Datenblock und 0x002A bekommen GAR KEINE Antwort, und danach braucht
+    das Geraet 2-3 s, bis es wieder annimmt (mit --busy nachbilden).
+    Das ist die Voreinstellung.
 
-    --silent bildet das echte Verhalten ab und ist deshalb die Voreinstellung
-    fuer alles, was mit Laufzeit zu tun hat. --exceptions erzwingt die
-    schnelle Variante, wenn man nur Logik pruefen will.
+    Eine fruehere Fassung liess JEDE tote Adresse schweigen, weil vom
+    echten Geraet nur die Luecke bekannt war. Das hat Laufzeitschaetzungen
+    um mehr als den Faktor zehn aufgeblaeht. --all-silent gibt es fuer den
+    Vergleich weiterhin, bildet aber nicht den Jupiter ab.
+
+    --exceptions laesst auch die Luecke mit Exception 2 antworten - fuer
+    reine Logikpruefungen ohne Wartezeiten.
 """
 import argparse
 import socket
@@ -32,6 +35,9 @@ import time
 # Belegte Bereiche wie am echten Geraet
 VALID = set(range(0x0001, 0x0026)) | {0x002A} | set(range(0x1000, 0x100B)) \
     | set(range(0x1100, 0x1106)) | set(range(0x1200, 0x1206))
+
+# Adressen, die am echten Geraet stumm bleiben statt Exception 2 zu liefern
+GAP = set(range(0x0026, 0x002A))
 
 
 def crc16(frame):
@@ -51,10 +57,10 @@ SCHWEIGEN = object()   # Rueckgabewert: gar nicht antworten
 
 
 class Device:
-    def __init__(self, unit, corrupt, silent=True, busy=0.0):
+    def __init__(self, unit, corrupt, dead="jupiter", busy=0.0):
         self.unit = unit
         self.corrupt = corrupt
-        self.silent = silent
+        self.dead = dead           # "jupiter", "exceptions" oder "silent"
         self.n = 0
         # Nachbildung eines Gateways, das nach einer unbeantworteten Anfrage
         # selbst noch eine Weile auf den RS485-Bus wartet ("Modbus TimeOut:
@@ -74,15 +80,21 @@ class Device:
     def answer(self, addr, count):
         """(exception_code, values) -- genau eines ist gesetzt.
 
-        Bei einer toten Adresse ist das Ergebnis (SCHWEIGEN, None), wenn
-        silent gesetzt ist: der Aufrufer sendet dann nichts und der Client
-        laeuft in seinen Timeout, wie am echten Geraet.
+        Bei einer toten Adresse ist das Ergebnis (SCHWEIGEN, None), wenn das
+        Geraet dort schweigt: der Aufrufer sendet dann nichts und der Client
+        laeuft in seinen Timeout. Welche Adressen schweigen, bestimmt
+        self.dead - siehe Dateikopf.
         """
         if count < 1 or count > 8:
             return 3, None
-        if any(a not in VALID for a in range(addr, addr + count)):
-            return (SCHWEIGEN if self.silent else 2), None
-        return None, [value(a) for a in range(addr, addr + count)]
+        wanted = range(addr, addr + count)
+        if any(a not in VALID for a in wanted):
+            if self.dead == "silent":
+                return SCHWEIGEN, None
+            if self.dead == "jupiter" and any(a in GAP for a in wanted):
+                return SCHWEIGEN, None
+            return 2, None
+        return None, [value(a) for a in wanted]
 
     def should_corrupt(self):
         if not self.corrupt:
@@ -206,6 +218,9 @@ def main():
     ap.add_argument("--rtu", action="store_true")
     ap.add_argument("--corrupt", type=int, default=0,
                     help="jede N-te Antwort kaputt machen")
+    ap.add_argument("--all-silent", action="store_true",
+                    help="JEDE tote Adresse schweigen lassen - das alte, "
+                         "falsche Modell, nur noch zum Vergleich")
     ap.add_argument("--exceptions", action="store_true",
                     help="tote Adressen mit Exception 2 beantworten statt zu "
                          "schweigen. Schnell, aber NICHT das Verhalten des "
@@ -224,7 +239,9 @@ def main():
                          "Timeout laenger ist als der des Clients")
     args = ap.parse_args()
 
-    dev = Device(args.unit, args.corrupt, silent=not args.exceptions,
+    dead = ("exceptions" if args.exceptions
+            else "silent" if args.all_silent else "jupiter")
+    dev = Device(args.unit, args.corrupt, dead=dead,
                  busy=args.busy)
     dev.no_ident = args.no_ident
     dev.exc11 = args.exc11
@@ -236,7 +253,9 @@ def main():
     srv.listen(5)
     print("Testgeraet auf 127.0.0.1:%d (%s, tote Adressen: %s)"
           % (args.port, "rtu" if args.rtu else "tcp",
-             "Exception 2" if args.exceptions else "Schweigen"), flush=True)
+             {"jupiter": "Exception 2, Luecke 0x0026-0x0029 stumm",
+              "exceptions": "alle Exception 2",
+              "silent": "alle stumm"}[dead]), flush=True)
     handler = serve_rtu if args.rtu else serve_tcp
     while True:
         conn, _ = srv.accept()

@@ -584,12 +584,12 @@ def discover(bus, start, end, fast=False):
                 todo.insert(0, (a + 1, n - 2))
             continue
         # Straight to single registers instead of halving 8 -> 4 -> 2 -> 1.
-        # On this device a dead address does not answer at all, and the
-        # device then needs about two seconds before it takes the next
-        # request (measured 29.09.2026). Every failing probe therefore costs
-        # a full timeout. Halving spends 15 probes on a dead 8-block
-        # (1 + 2 + 4 + 8); going straight to singles spends 9 (1 + 8), and
-        # finds exactly the same registers -- 0x002A included.
+        # Halving spends 15 probes on a dead 8-block (1 + 2 + 4 + 8); going
+        # straight to singles spends 9 (1 + 8), and finds exactly the same
+        # registers -- 0x002A included. On the Jupiter most dead addresses
+        # cost ~0.2 s each (exception 2), but the gap 0x0026-0x0029 stays
+        # silent and costs a full timeout plus 2-3 s busy time per probe,
+        # so fewer probes there matter most (measured 29.09.2026).
         for x in range(a + n - 1, a - 1, -1):
             todo.insert(0, (x, 1))
 
@@ -660,6 +660,22 @@ def quality_report(bus):
     lines.append("     (counted once per attempt; the lines above are the")
     lines.append("      breakdown by reason and can total higher, because one")
     lines.append("      disturbance can trip two of them)")
+    if bus.rejects["closed"]:
+        lines.append("")
+        lines.append("  *** %d CONNECTIONS REFUSED -- THIS DUMP IS PROBABLY "
+                     "INCOMPLETE ***" % bus.rejects["closed"])
+        lines.append("  Every refused probe was booked as a dead address. The "
+                     "usual cause is a")
+        lines.append("  --timeout shorter than the time the device stays busy "
+                     "after a request")
+        lines.append("  into the gap 0x0026-0x0029 -- measured 2-3 s. On the "
+                     "test device a")
+        lines.append("  0.3 s timeout lost 7 of 61 registers, 0x002A among "
+                     "them, and the run")
+        lines.append("  finished FASTER than a correct one. Measure with "
+                     "--calibrate and repeat")
+        lines.append("  with the recommended --timeout. Another client on the "
+                     "gateway does the same.")
     if bus.mode == "tcp":
         lines.append("  Note: in tcp mode a stray answer whose transaction ID")
         lines.append("  happens to match is NOT counted here -- it cannot be.")
@@ -974,7 +990,19 @@ def probe(bus, units=True):
     return findings
 
 
-DEAD_ADDRESS = 0x0026   # documented as non-existent on the Jupiter C Plus
+# Two kinds of "nothing here" on a Jupiter C Plus, measured 29.09.2026 on
+# unit 1 and unit 11 alike:
+#   - almost every non-existent address is rejected with exception 2 in
+#     about 0.2 s -- DEAD_ADDRESS is one of those
+#   - the four addresses 0x0026-0x0029 between the data block and 0x002A
+#     get no answer at all, and afterwards the device needs 2-3 s before it
+#     takes the next request -- GAP_ADDRESS is one of those
+# An earlier version used 0x0026 as "the" dead address and generalised its
+# silence to every dead address. That was wrong, and it inflated every
+# runtime estimate by a factor of ten or more.
+DEAD_ADDRESS = 0x0030
+GAP_ADDRESS = 0x0026
+GAP_SIZE = 4
 # Probes a thorough scan of RANGES (3 x 1024 addresses) needs on a Jupiter C
 # Plus, counted against the test device: one per 8-block plus one per
 # address of every block that fails. Used only for the runtime estimate.
@@ -1029,33 +1057,38 @@ def calibrate(host, port, unit, mode):
           % (lat["n"], 1000 * lat["min"], 1000 * lat["median"],
              1000 * lat["max"]), flush=True)
 
-    # B -- what does a dead request produce?
-    time.sleep(3)
-    print("\nB  A request to a dead address (0x%04X), waiting up to 10 s:"
-          % DEAD_ADDRESS, flush=True)
-    bus = fresh(10.0)
-    t0 = time.time()
-    data, note = bus.raw(dead_pdu)
-    waited = time.time() - t0
-    bus.close()
-    if data is not None and data[0] & 0x80:
-        code = data[1] if len(data) > 1 else 0
-        result["dead"] = {"answer": "exception", "code": code,
-                          "after": waited}
-        print("   exception %d (%s) after %.2f s"
-              % (code, EXCEPTION_TEXT.get(code, "?"), waited), flush=True)
-    elif data is not None:
-        result["dead"] = {"answer": "value", "after": waited}
-        print("   a VALUE came back after %.2f s -- 0x%04X is not dead on "
-              "this device, or an answer went astray" % (waited, DEAD_ADDRESS))
-    else:
-        result["dead"] = {"answer": "silence", "after": waited, "note": note}
+    # B -- what do the two kinds of "nothing here" produce?
+    def probe_dead(label, addr):
+        pdu = struct.pack(">BHH", 3, addr, 1)
+        time.sleep(3)
+        print("\n%s  0x%04X, waiting up to 10 s:" % (label, addr), flush=True)
+        bus = fresh(10.0)
+        t0 = time.time()
+        data, note = bus.raw(pdu)
+        waited = time.time() - t0
+        bus.close()
+        if data is not None and data[0] & 0x80:
+            code = data[1] if len(data) > 1 else 0
+            print("   exception %d (%s) after %.2f s"
+                  % (code, EXCEPTION_TEXT.get(code, "?"), waited), flush=True)
+            return {"answer": "exception", "code": code, "after": waited}
+        if data is not None:
+            print("   a VALUE came back after %.2f s" % waited, flush=True)
+            return {"answer": "value", "after": waited,
+                    "data": data.hex()}
         print("   silence for %.1f s (%s)" % (waited, note), flush=True)
+        return {"answer": "silence", "after": waited, "note": note}
+
+    result["dead"] = probe_dead("B1 An ordinary non-existent address",
+                                DEAD_ADDRESS)
+    result["gap"] = probe_dead("B2 The gap between data block and 0x002A",
+                               GAP_ADDRESS)
+    dead_pdu = struct.pack(">BHH", 3, GAP_ADDRESS, 1)   # C uses the gap
 
     # C -- busy window after an abandoned request
     time.sleep(4)
-    print("\nC  Gateway busy time: send a dead request, walk away, reconnect "
-          "after d seconds:", flush=True)
+    print("\nC  Busy time after a request into the gap: send it, walk away, "
+          "reconnect after d seconds:", flush=True)
     delays = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
     table = []
     streak = 0
@@ -1096,43 +1129,42 @@ def calibrate(host, port, unit, mode):
     candidates = [floor]
     if busy is not None:
         candidates.append(busy * 1.5)
-    dead = result["dead"]
-    if dead["answer"] == "exception":
-        candidates.append(dead["after"] * 1.5)
     rec = round(max(candidates) + 0.049, 1)
     result["recommended_timeout"] = rec
-    if busy is None:
-        print("   The gateway did not let a client back in reliably within "
-              "%.0f s. Keep generous timeouts." % delays[-1])
-    else:
-        print("   Gateway busy after an abandoned request: about %.2f s"
-              % busy)
-    print("   Recommended --timeout: %.1f s" % rec)
+
+    dead, gap = result["dead"], result["gap"]
     if dead["answer"] == "exception":
-        cost0 = costR = dead["after"]
-        print("   A dead address is answered with exception %d after %.2f s."
-              % (dead["code"], dead["after"]))
-        print("   Exceptions are never retried, so that is its whole cost.")
+        dead_cost = dead["after"]
+        print("   Ordinary dead address: exception %d after %.2f s -- cheap, "
+              "never retried." % (dead["code"], dead["after"]))
     else:
-        cost0 = rec
-        costR = rec * (RETRY + 1)
-        print("   A dead address stays silent: it costs the full timeout, "
-              "once per attempt.")
-        print("   Retries buy nothing here -- silence is the answer. For "
-              "mapping, use --retries 0;")
-        print("   the three read passes over every register found still "
-              "guard the values.")
-    result["cost_per_dead_address"] = {"retries_0": cost0,
-                                       "retries_default": costR}
-    for label_, cost, dly in (("--retries 0 --delay 0.1", cost0, 0.1),
-                              ("defaults (--retries %d --delay %.2f)"
-                               % (RETRY, DELAY), costR, DELAY)):
-        per = cost + dly
+        dead_cost = rec
+        print("   Ordinary dead address: %s -- every one costs the full "
+              "timeout." % dead["answer"])
+    if gap["answer"] == "silence":
+        print("   Gap 0x%04X: silence%s."
+              % (GAP_ADDRESS, "" if busy is None
+                 else ", device busy for about %.2f s afterwards" % busy))
+    else:
+        print("   Gap 0x%04X: %s after %.2f s -- not silent on this device."
+              % (GAP_ADDRESS, gap["answer"], gap["after"]))
+    if busy is None:
+        print("   No reliable reconnect within %.0f s. Keep generous "
+              "timeouts." % delays[-1])
+    print("   Recommended --timeout: %.1f s  (must exceed the busy time, "
+          "or the scan loses registers right after the gap)" % rec)
+    result["cost_per_dead_address"] = dead_cost
+
+    gap_cost = (rec + (busy or 0)) * GAP_SIZE
+    for label_, dly in (("--retries 0 --delay 0.1", 0.1),
+                        ("defaults (--delay %.2f)" % DELAY, DELAY)):
+        thorough = THOROUGH_PROBES * (dead_cost + dly) + gap_cost
+        full = 65536 * (dead_cost + dly) + gap_cost
         print("   %s:" % label_)
         print("     thorough scan, 3 x 1024 addresses   ~%.0f min"
-              % (THOROUGH_PROBES * per / 60))
+              % (thorough / 60))
         print("     every single register, 65536        ~%.1f h"
-              % (65536 * per / 3600))
+              % (full / 3600))
     return result
 
 
