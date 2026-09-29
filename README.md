@@ -179,7 +179,16 @@ only a majority verdict; anything else is flagged, not silently used.
 python3 regscan.py --label before-update      # snapshot
 python3 regscan.py --sweep                    # also sweep 0x0000-0xFFFF
 python3 regscan.py --diff before-update.json  # compare against a snapshot
+python3 regscan.py --rtu                      # Modbus RTU over TCP
 ```
+
+Every run prints a tally of *why* reads were discarded, so a change to the
+setup can be judged by a number rather than an impression;
+`--benchmark` does that measurement in minutes instead of hours. `--rtu`
+speaks raw RTU frames instead of Modbus TCP, which takes the protocol
+conversion away from the gateway — an option for when those counters rise, not
+a default. [`docs/gateway.md`](docs/gateway.md#if-you-ever-need-it-take-the-conversion-away-from-the-gateway)
+explains what it does and does not catch, and records a measured baseline.
 
 **Take a snapshot before every firmware update.** Marstek ships no changelogs, and
 register addresses have demonstrably moved between device generations elsewhere in

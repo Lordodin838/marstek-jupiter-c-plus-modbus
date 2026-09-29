@@ -187,7 +187,16 @@ verwendet.
 python3 regscan.py --label vor-update         # Abzug anlegen
 python3 regscan.py --sweep                    # zusätzlich 0x0000-0xFFFF absuchen
 python3 regscan.py --diff vor-update.json     # gegen einen Abzug halten
+python3 regscan.py --rtu                      # Modbus RTU over TCP
 ```
+
+Jeder Lauf zählt mit, *warum* Antworten verworfen wurden — eine Änderung am
+Aufbau lässt sich so an einer Zahl beurteilen statt am Gefühl; `--benchmark`
+erledigt diese Messung in Minuten statt Stunden. `--rtu` spricht rohe
+RTU-Telegramme statt Modbus TCP und nimmt dem Gateway die Protokollumsetzung ab
+— eine Option für den Fall, dass diese Zähler steigen, kein Standard. Was das
+abfängt und was nicht, und ein gemessener Ausgangswert, stehen in
+[`docs/gateway.de.md`](docs/gateway.de.md#falls-doch-nötig-die-umsetzung-vom-gateway-wegnehmen).
 
 **Vor jedem Firmware-Update einen Abzug ziehen.** Marstek liefert keine
 Changelogs, und in der Marstek-Reihe haben sich Registeradressen zwischen

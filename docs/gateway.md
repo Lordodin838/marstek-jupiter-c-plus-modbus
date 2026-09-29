@@ -131,6 +131,129 @@ appeared at least twice. Anything else is written to the report as `NEIN`/unsafe
 rather than quietly used. That belt-and-braces approach is why the dumps in
 [`dumps/`](../dumps) can be diffed against each other meaningfully.
 
+### A second client is refused, not interleaved
+
+Measured on an Elfin EE11C, firmware 1.41.6, `Max Accept` set to 3: while Home
+Assistant held the connection, a second client was **rejected**. The converter
+accepted the TCP connection and closed it again immediately — 2700 attempts,
+2700 times `connection closed by peer`, at 0.465 s each, which is the client's
+own delay and not a timeout. Not one stray value came through.
+
+Two things follow.
+
+**The corrupted readings this repository documents did not come from two
+programs competing.** They cannot have: the converter does not let two in. They
+came from bursts *inside* one client — several Home Assistant sensors firing in
+the same moment. That is what the longer timeout and the prime intervals below
+actually fixed, and it is why the fix worked.
+
+**Raising `Max Accept` buys nothing.** The field accepts 3, the device behaves
+like 1. Leave it alone.
+
+One consequence for anyone measuring: run the scanner with the other client
+stopped, or it will simply be locked out and you will measure nothing. A
+`closed` count in the tally is the symptom.
+
+### If you ever need it: take the conversion away from the gateway
+
+Read this as an option, not a recommendation. On the device measured here it
+solves a problem that is not occurring — see the baseline at the end of this
+page. It becomes interesting when the discard counters start to rise.
+
+In its **Modbus** protocol mode the converter does the TCP↔RTU translation
+itself, and the only thing standing between you and a stale answer is a 16-bit
+transaction ID that the converter recycles.
+
+Set the converter's protocol to **None / transparent** instead and speak
+**Modbus RTU over TCP**: the raw serial frames pass through, each carrying its
+own CRC16, and the client controls the framing. `regscan.py --rtu` does this;
+Home Assistant's native `modbus:` integration does it with `type: rtuovertcp`.
+
+Be precise about what that buys, because it is easy to oversell:
+
+| | |
+|---|---|
+| **Caught** | merged frames (two answers in one TCP segment), split or truncated frames, anything shifted by a leftover byte, an answer from another slave address, a byte count that does not match the request |
+| **Not caught** | a stale answer to an *earlier request of exactly the same shape*. Its checksum is correct — it is a real frame, just the answer to the wrong question. No protocol-level check sees that, in either mode |
+
+Against the second case there is no clever trick, only discipline: drain the
+socket before each request, keep one client on the bus at a time, read several
+times and take a majority, and apply the plausibility limits below.
+
+A second, measured argument for RTU: when a frame is corrupted, the RTU client
+notices immediately and retries. The Modbus-TCP client cannot — it has to keep
+waiting for a matching transaction ID until the timeout expires. Each corrupted
+answer therefore costs a full timeout, and that stall is what starts the next
+collision. In a test against a simulated gateway that corrupted every second
+answer, the TCP path spent one timeout per corruption; the RTU path spent none.
+
+Both modes now count *why* reads were discarded and print the tally at the end
+of every run, so a before/after comparison of a gateway change is a number
+rather than an impression. The tcp figure is a lower bound by construction: the
+failure it cannot detect is the one that motivates the switch.
+
+### What the scanner's `--fast` flag gets wrong on purpose
+
+The boundary search halves failing blocks down to single registers. That is the
+only method that finds an isolated register with dead neighbours on both sides —
+`0x002A` is exactly that case.
+
+`--fast` skips a dead 8-register block after probing only its two ends. It is
+about three times quicker and **loses `0x002A` silently**, which a test run
+against a simulated device confirmed: 60 registers instead of 61. Worse, the
+six addresses in between used to be written into the dump as `exception 2`
+although the device was never asked about them. They now read `not probed
+(--fast)` instead.
+
+Use `--fast` for a rough boundary check. Never for a dump you intend to diff.
+
+### What a full scan really costs, and why
+
+**A non-existent address on this device does not answer at all.** It does not
+return exception 2 — it stays silent, and the dumps record it as
+`keine Antwort: timed out`. Every probe of empty space therefore costs a full
+timeout, times the number of retries.
+
+That single fact dominates the runtime, and it is easy to get wrong if you
+reason from a simulator that answers with an exception:
+
+| Settings | Cost per dead address | Thorough scan of 3 × 1024 addresses |
+|---|---|---|
+| `--timeout 4 --retries 2 --delay 0.45` (defaults) | ~13 s | **~15 hours** |
+| `--timeout 1 --retries 1 --delay 0.2` | ~2.4 s | ~4 hours |
+| as above plus `--fast` | ~2.4 s | ~45 minutes |
+
+The defaults are deliberately cautious, not fast. For a full map, lower the
+timeout: a register that exists answers in well under 100 ms, so a short
+timeout costs nothing on the addresses you actually care about.
+
+**And for judging a gateway change, do not scan at all.** Over 90 % of a scan's
+time is spent waiting on registers that were never there, which says nothing
+about the link. `--benchmark` reads the known blocks over and over instead:
+minutes rather than hours, and it mirrors what a client does in daily use.
+
+---
+
+## Baseline, 29 September 2026
+
+Elfin EE11C, firmware 1.41.6, Modbus protocol mode, 115200 8N1 half duplex,
+`Gap Time` 50 ms, `Modbus TimeOut` auto, Home Assistant stopped for the run:
+
+```
+regscan.py --benchmark 40      40 rounds over 9 known blocks
+mode = tcp                     requests = 360
+failed_attempts = 0            rejects = {}
+seconds = 240.7                every block 40/40
+```
+
+In the same period the Home Assistant integration reported **0 discarded
+values out of 11592 requests**.
+
+Nothing here needs fixing. The point of writing the numbers down is the next
+comparison: run the same command after a firmware update, a cable change or a
+new client on the network, and the difference is a number instead of an
+impression.
+
 ---
 
 ## Sanity checks worth automating

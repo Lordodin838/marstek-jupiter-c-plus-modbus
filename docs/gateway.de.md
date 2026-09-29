@@ -135,6 +135,135 @@ zweimal aufgetaucht ist. Alles andere steht im Bericht als `NEIN` statt still
 verwendet zu werden. Diese doppelte Absicherung ist der Grund, warum sich die
 Abzüge in [`dumps/`](../dumps) sinnvoll gegeneinander halten lassen.
 
+### Ein zweiter Client wird abgewiesen, nicht verschränkt
+
+Gemessen an einem Elfin EE11C, Firmware 1.41.6, `Max Accept` auf 3: während
+Home Assistant die Verbindung hielt, wurde ein zweiter Client **abgewiesen**.
+Der Konverter nahm die TCP-Verbindung an und schloss sie sofort wieder — 2700
+Versuche, 2700 Mal `connection closed by peer`, je 0,465 s, also genau die
+Wartezeit des Clients und kein Timeout. Kein einziger verirrter Wert kam durch.
+
+Daraus folgen zwei Dinge.
+
+**Die fehlerhaften Messwerte, die dieses Repository dokumentiert, kamen nicht
+von zwei konkurrierenden Programmen.** Sie können es nicht: der Konverter
+lässt keine zwei zu. Sie kamen von Bursts *innerhalb* eines Clients — mehrere
+Home-Assistant-Sensoren, die im selben Moment feuerten. Genau das haben der
+längere Timeout und die Primzahl-Intervalle weiter unten behoben, und deshalb
+hat die Behebung gewirkt.
+
+**`Max Accept` zu erhöhen bringt nichts.** Das Feld nimmt 3 an, das Gerät
+verhält sich wie 1. Finger weg.
+
+Eine Folge für jeden, der misst: den Scanner nur mit gestopptem zweitem Client
+laufen lassen, sonst wird er schlicht ausgesperrt und misst nichts. Ein Wert
+bei `closed` in der Aufstellung ist das Symptom.
+
+### Falls doch nötig: die Umsetzung vom Gateway wegnehmen
+
+Als Option lesen, nicht als Empfehlung. An dem hier gemessenen Gerät löst sie
+ein Problem, das nicht auftritt — siehe den Ausgangswert am Ende der Seite.
+Interessant wird sie, wenn die Zähler für verworfene Werte zu steigen beginnen.
+
+In der Betriebsart **Modbus** macht der Konverter die Umsetzung TCP↔RTU selbst,
+und das Einzige zwischen dir und einer veralteten Antwort ist eine 16-Bit-
+Transaction-ID, die der Konverter wiederverwendet.
+
+Stell das Protokoll stattdessen auf **None / transparent** und sprich
+**Modbus RTU over TCP**: dann laufen die rohen seriellen Telegramme durch, jedes
+mit eigener CRC16, und der Client bestimmt die Rahmengrenzen. `regscan.py --rtu`
+macht genau das; die native `modbus:`-Integration in Home Assistant mit
+`type: rtuovertcp`.
+
+Was das bringt, muss man genau sagen, sonst verspricht man zu viel:
+
+| | |
+|---|---|
+| **Wird erkannt** | verschmolzene Telegramme (zwei Antworten in einem TCP-Segment), zerrissene oder abgeschnittene Telegramme, alles, was ein übriggebliebenes Byte verschoben hat, eine Antwort von einer anderen Slave-Adresse, eine Byte-Zahl, die nicht zur Anfrage passt |
+| **Wird nicht erkannt** | eine veraltete Antwort auf eine *frühere Anfrage von exakt derselben Form*. Ihre Prüfsumme stimmt, denn es ist ein echtes Telegramm — nur die Antwort auf die falsche Frage. Das sieht keine Prüfung auf Protokollebene, in keiner der beiden Betriebsarten |
+
+Gegen den zweiten Fall hilft kein Kniff, nur Disziplin: den Socket vor jeder
+Anfrage leerräumen, immer nur einen Client am Bus, mehrfach lesen und die
+Mehrheit nehmen, und die Plausibilitätsgrenzen weiter unten anwenden.
+
+Ein zweites, gemessenes Argument für RTU: Ist ein Telegramm kaputt, merkt der
+RTU-Client das sofort und wiederholt die Anfrage. Der Modbus-TCP-Client kann das
+nicht — er muss bis zum Timeout auf eine passende Transaction-ID warten. Jede
+kaputte Antwort kostet dort also einen vollen Timeout, und genau diese Blockade
+löst die nächste Kollision aus. Im Test gegen ein simuliertes Gateway, das jede
+zweite Antwort verfälschte, brauchte der TCP-Pfad je Störung einen Timeout, der
+RTU-Pfad keinen.
+
+Beide Betriebsarten zählen jetzt mit, *warum* Lesungen verworfen wurden, und
+geben die Aufstellung am Ende jedes Laufs aus. Damit ist der Vorher/Nachher-
+Vergleich einer Gateway-Änderung eine Zahl und kein Eindruck. Der TCP-Wert ist
+dabei bauartbedingt eine Untergrenze: der Fehler, den er nicht sehen kann, ist
+der, dessentwegen man umstellt.
+
+### Was `--fast` im Scanner absichtlich falsch macht
+
+Die Grenzsuche halbiert scheiternde Blöcke bis hinunter zum Einzelregister. Nur
+so findet man ein Register, das isoliert zwischen toten Nachbarn sitzt —
+`0x002A` ist genau dieser Fall.
+
+`--fast` überspringt einen toten 8er-Block, nachdem nur dessen beide Enden
+geprüft wurden. Das ist rund dreimal schneller und **verliert `0x002A`
+stillschweigend**; ein Lauf gegen ein simuliertes Gerät hat das bestätigt: 60
+Register statt 61. Schlimmer noch, die sechs Adressen dazwischen standen bisher
+als `exception 2` im Abzug, obwohl das Gerät dazu nie befragt wurde. Jetzt steht
+dort `not probed (--fast)`.
+
+`--fast` taugt für eine grobe Grenzprüfung. Nicht für einen Abzug, den du später
+vergleichen willst.
+
+### Was ein vollständiger Scan wirklich kostet, und warum
+
+**Eine nicht vorhandene Adresse antwortet bei diesem Gerät gar nicht.** Sie
+liefert keine Exception 2 — sie schweigt, und die Abzüge halten das als
+`keine Antwort: timed out` fest. Jede Probe im Leeren kostet damit einen vollen
+Timeout, mal Anzahl der Wiederholungen.
+
+Diese eine Tatsache bestimmt die Laufzeit, und man verrechnet sich leicht, wenn
+man von einem Testgerät ausgeht, das mit einer Exception antwortet:
+
+| Einstellungen | Kosten je toter Adresse | Gründlicher Scan über 3 × 1024 Adressen |
+|---|---|---|
+| `--timeout 4 --retries 2 --delay 0.45` (Standard) | ~13 s | **~15 Stunden** |
+| `--timeout 1 --retries 1 --delay 0.2` | ~2,4 s | ~4 Stunden |
+| dasselbe plus `--fast` | ~2,4 s | ~45 Minuten |
+
+Die Standardwerte sind bewusst vorsichtig, nicht schnell. Für eine
+vollständige Karte den Timeout senken: ein vorhandenes Register antwortet
+deutlich unter 100 ms, ein kurzer Timeout kostet dort also nichts.
+
+**Und um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Über
+90 % der Scanzeit vergehen mit Warten auf Register, die es nie gab — das sagt
+über die Verbindung nichts. `--benchmark` liest stattdessen die bekannten
+Blöcke immer wieder: Minuten statt Stunden, und es bildet ab, was ein Client im
+Alltag tut.
+
+---
+
+## Ausgangswert, 29. September 2026
+
+Elfin EE11C, Firmware 1.41.6, Betriebsart Modbus, 115200 8N1 Half Duplex,
+`Gap Time` 50 ms, `Modbus TimeOut` auto, Home Assistant für den Lauf gestoppt:
+
+```
+regscan.py --benchmark 40      40 Runden über 9 bekannte Blöcke
+mode = tcp                     requests = 360
+failed_attempts = 0            rejects = {}
+seconds = 240,7                jeder Block 40/40
+```
+
+Im selben Zeitraum meldete die Home-Assistant-Integration **0 verworfene Werte
+bei 11592 Anfragen**.
+
+Hier ist nichts zu reparieren. Der Sinn, die Zahlen aufzuschreiben, ist der
+nächste Vergleich: denselben Befehl nach einem Firmware-Update, einer
+Kabeländerung oder einem neuen Client im Netz laufen lassen — dann ist der
+Unterschied eine Zahl und kein Eindruck.
+
 ---
 
 ## Plausibilitätsprüfungen, die sich zu automatisieren lohnen
