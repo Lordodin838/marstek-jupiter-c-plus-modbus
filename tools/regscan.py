@@ -847,25 +847,111 @@ def probe(bus, units=True):
     if not units:
         return findings
 
-    print("\nUnit IDs 1-247, one read of 0x0010 each "
-          "(this takes a while on silence):", flush=True)
-    hits = []
-    for unit in range(1, 248):
+    # The sweep is only worth anything if it finds the one unit that is
+    # known to exist. A first run on a real EE11 reported "none" -- unit 1
+    # included, which had answered seconds earlier in the same run. The
+    # client had given up after 0.5 s while the gateway was still waiting on
+    # the bus for the previous, silent request, and every reconnect was
+    # refused. So: let the gateway settle, check the known unit before AND
+    # after, and refuse to call the result valid otherwise.
+    def settle():
+        # Wait, THEN reconnect. A socket opened while the gateway was still
+        # busy has already been refused and is dead on arrival.
+        time.sleep(max(2.0, bus.timeout))
+        try:
+            bus.connect()
+        except OSError:
+            pass
+
+    settle()
+
+    def ask(unit):
         data, note = bus.raw(b"\x03\x00\x10\x00\x01", unit=unit)
-        if data is not None and not (data[0] & 0x80):
+        if data is None:
+            return False, note or "?"
+        return True, ("exception" if data[0] & 0x80 else "value")
+
+    control_before, why_before = ask(bus.unit)
+    print("\nControl: unit %d %s"
+          % (bus.unit, "answers" if control_before
+             else "DOES NOT ANSWER (%s)" % why_before), flush=True)
+
+    print("Unit IDs 1-247, one read of 0x0010 each "
+          "(this takes a while on silence):", flush=True)
+    hits, reasons = [], {}
+    for unit in range(1, 248):
+        ok, why = ask(unit)
+        if ok:
             hits.append(unit)
-            print("  unit %3d answers: %s" % (unit, _printable(data)),
-                  flush=True)
-        elif data is not None:
-            hits.append(unit)
-            print("  unit %3d answers with an exception -- it exists"
-                  % unit, flush=True)
+            print("  unit %3d answers (%s)" % (unit, why), flush=True)
+        else:
+            kind = ("closed" if "closed" in why or "reset" in why
+                    else "timeout" if "timed out" in why or why == "no response"
+                    else why)
+            reasons[kind] = reasons.get(kind, 0) + 1
         if unit % 50 == 0:
             print("  ... %d/247" % unit, flush=True)
         time.sleep(DELAY)
+
+    settle()
+    control_after, why_after = ask(bus.unit)
+
+    control_ok = control_before and control_after and bus.unit in hits
+    refused = reasons.get("closed", 0)
+    # Three outcomes. The control unit answers: the list is trustworthy.
+    # It does not, but others do and the gateway refused nothing: the
+    # device simply lives at a different address than --unit says -- which
+    # is exactly what this sweep exists to discover. Otherwise: not valid.
+    if control_ok:
+        valid = True
+        verdict = "valid"
+    elif hits and refused == 0:
+        valid = True
+        verdict = "valid, but configured unit silent"
+    else:
+        valid = False
+        verdict = "not valid"
+
+    print("\nNo answer, by reason: %s"
+          % (", ".join("%s x%d" % kv for kv in sorted(reasons.items()))
+             or "-"))
+    if verdict == "valid":
+        print("Answering unit IDs: %s" % ", ".join(str(u) for u in hits))
+    elif verdict.startswith("valid, but"):
+        print("Answering unit IDs: %s" % ", ".join(str(u) for u in hits))
+        print("\nNote: the configured unit %d does NOT answer, but the ones "
+              "above do." % bus.unit)
+        print("The device most likely lives at a different address. Repeat "
+              "any scan with")
+        print("--unit %d." % hits[0])
+    else:
+        print("\n*** SWEEP NOT VALID ***")
+        print("The control unit %d did not answer reliably (before: %s, "
+              "after: %s, in sweep: %s)."
+              % (bus.unit, "ok" if control_before else why_before,
+                 "ok" if control_after else why_after,
+                 "yes" if bus.unit in hits else "no"))
+        if refused:
+            print("%d probes were refused by the gateway. That is the "
+                  "signature of a client" % refused)
+            print("timeout shorter than the gateway's own wait: the client "
+                  "gives up, reconnects,")
+            print("and the gateway -- still busy with the old request -- "
+                  "turns it away.")
+            print("Repeat with a longer --timeout, e.g. --timeout 2.")
+        print("An empty or partial list from this run says nothing about "
+              "other units.")
+
     findings["units"] = hits
-    print("\nAnswering unit IDs: %s"
-          % (", ".join(str(u) for u in hits) or "none"))
+    findings["unit_sweep"] = {
+        "valid": bool(valid),
+        "verdict": verdict,
+        "control_unit": bus.unit,
+        "control_before": control_before,
+        "control_after": control_after,
+        "no_answer_reasons": reasons,
+        "timeout": bus.timeout,
+    }
     return findings
 
 

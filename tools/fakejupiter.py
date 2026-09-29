@@ -27,6 +27,7 @@ import argparse
 import socket
 import struct
 import threading
+import time
 
 # Belegte Bereiche wie am echten Geraet
 VALID = set(range(0x0001, 0x0026)) | {0x002A} | set(range(0x1000, 0x100B)) \
@@ -50,11 +51,24 @@ SCHWEIGEN = object()   # Rueckgabewert: gar nicht antworten
 
 
 class Device:
-    def __init__(self, unit, corrupt, silent=True):
+    def __init__(self, unit, corrupt, silent=True, busy=0.0):
         self.unit = unit
         self.corrupt = corrupt
         self.silent = silent
         self.n = 0
+        # Nachbildung eines Gateways, das nach einer unbeantworteten Anfrage
+        # selbst noch eine Weile auf den RS485-Bus wartet ("Modbus TimeOut:
+        # auto") und in dieser Zeit keinen neuen Client annimmt.
+        self.busy = busy
+        self.busy_until = 0.0
+        self.no_ident = False
+
+    def mark_silence(self):
+        if self.busy:
+            self.busy_until = time.time() + self.busy
+
+    def is_busy(self):
+        return time.time() < self.busy_until
 
     def answer(self, addr, count):
         """(exception_code, values) -- genau eines ist gesetzt.
@@ -101,6 +115,9 @@ def handle(dev, pdu):
         return struct.pack(">BB", func, count * 2) + \
             struct.pack(">%dH" % count, *vals)
 
+    if func in (0x11, 0x2B) and dev.no_ident:
+        return None                       # wie hinter dem EE11 beobachtet
+
     if func == 0x11:                      # Report Server ID
         return bytes([func, len(SERVER_ID)]) + SERVER_ID
 
@@ -127,10 +144,14 @@ def serve_rtu(conn, dev):
             if crc16(buf[:-2]) != buf[-2:]:
                 break                         # noch unvollstaendig
             frame, buf = buf, b""
+            if dev.is_busy():
+                break
             if frame[0] != dev.unit:
+                dev.mark_silence()
                 break                         # nicht fuer uns: schweigen
             answer = handle(dev, frame[1:-2])
             if answer is None:
+                dev.mark_silence()
                 break
             body = bytes([dev.unit]) + answer
             out = body + crc16(body)
@@ -152,10 +173,14 @@ def serve_tcp(conn, dev):
                 break
             unit = buf[6]
             pdu, buf = buf[7:6 + ln], buf[6 + ln:]
+            if dev.is_busy():
+                continue                      # Gateway haengt noch
             if unit != dev.unit:
+                dev.mark_silence()
                 continue                      # schweigen, wie am Bus
             answer = handle(dev, pdu)
             if answer is None:
+                dev.mark_silence()
                 continue
             body = bytes([unit]) + answer
             if dev.should_corrupt():
@@ -174,9 +199,19 @@ def main():
                     help="tote Adressen mit Exception 2 beantworten statt zu "
                          "schweigen. Schnell, aber NICHT das Verhalten des "
                          "echten Geraets - nur fuer Logikpruefungen")
+    ap.add_argument("--no-ident", action="store_true",
+                    help="FC17 und FC43 unbeantwortet lassen, wie es hinter "
+                         "dem EE11 im Modbus-Modus beobachtet wurde")
+    ap.add_argument("--busy", type=float, default=0.0,
+                    help="nach einer unbeantworteten Anfrage so viele "
+                         "Sekunden besetzt bleiben und neue Verbindungen "
+                         "abweisen - bildet ein Gateway nach, dessen eigener "
+                         "Timeout laenger ist als der des Clients")
     args = ap.parse_args()
 
-    dev = Device(args.unit, args.corrupt, silent=not args.exceptions)
+    dev = Device(args.unit, args.corrupt, silent=not args.exceptions,
+                 busy=args.busy)
+    dev.no_ident = args.no_ident
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("127.0.0.1", args.port))
@@ -187,6 +222,9 @@ def main():
     handler = serve_rtu if args.rtu else serve_tcp
     while True:
         conn, _ = srv.accept()
+        if dev.is_busy():
+            conn.close()                      # wie der EE11: abweisen
+            continue
         threading.Thread(target=handler, args=(conn, dev),
                          daemon=True).start()
 
