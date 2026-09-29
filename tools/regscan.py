@@ -26,6 +26,8 @@ Usage
                                                   # compare two existing
                                                   # files without reading
                                                   # the device
+    python3 regscan.py --rtu                      # speak Modbus RTU over
+                                                  # TCP -- see below
 
 THIS SCRIPT NEVER WRITES TO THE DEVICE. It uses function code 3 (read
 holding registers) exclusively.
@@ -50,6 +52,45 @@ Three device properties that explain the design
    Countermeasure: every value is read several times and only a majority
    verdict is accepted. Anything else is flagged as unsafe rather than
    silently used.
+
+Two modes: --rtu is the stronger one
+------------------------------------
+Default is Modbus TCP. The gateway converts to RTU itself, and the only
+thing standing between you and a stale answer is a 16-bit transaction ID
+that the gateway recycles. When it matches by accident, the wrong value
+lands in the right-looking register and nothing anywhere reports a fault.
+
+With --rtu the script speaks Modbus RTU over TCP: raw serial frames, each
+with its own CRC16, and the socket is drained before every request.
+Requires the gateway's protocol setting to be "None"/transparent instead of
+"Modbus" -- on an Elfin EE11/EW11 that is one dropdown, and Home Assistant's
+native modbus: integration follows with type: rtuovertcp.
+
+Be precise about what that buys, because it is easy to oversell:
+
+  CAUGHT -- merged frames (two answers in one TCP segment), split or
+  truncated frames, anything shifted by a leftover byte, an answer from
+  another slave address, and an answer whose byte count does not match the
+  request. Those are the failures a cheap gateway actually produces, and in
+  "Modbus" mode the gateway resolves them silently and sometimes wrongly,
+  where here they fail loudly.
+
+  NOT CAUGHT -- a stale answer to an earlier request of exactly the same
+  shape. Its checksum is correct, because it is a genuine frame; it is just
+  the answer to the wrong question. No protocol-level check can see that,
+  in either mode. What guards against it is the drain, one client on the
+  bus at a time, the three passes with a majority verdict, and the
+  plausibility limits in docs/gateway.md.
+
+Both modes count why reads were discarded and print the tally at the end
+(also written into the dump). Running the same scan once per mode is the
+measurement of whether the change helped -- and note that the tcp figure is
+a lower bound by construction: the failure it cannot detect is the one that
+makes --rtu worth it.
+
+RTU has no transaction IDs, so the socket is drained before every request;
+a single leftover byte would shift all following frames. Those leftovers
+are counted too, under "stale_bytes".
 
 On the coarse sweep (--sweep)
 -----------------------------
@@ -97,6 +138,14 @@ RANGES = [
     (0x4000, 0x43FF, "write registers (usually empty when read)"),
 ]
 
+# Blocks known to hold registers on a Jupiter C Plus, firmware 142. The
+# benchmark hammers these instead of scanning dead space: a dead address
+# costs a full timeout and says nothing about the quality of the link.
+KNOWN_BLOCKS = [
+    (0x0001, 8), (0x0009, 8), (0x0011, 8), (0x0019, 8), (0x0021, 5),
+    (0x1000, 8), (0x1008, 3), (0x1100, 6), (0x1200, 6),
+]
+
 # Coarse sweep: page size and sample offsets within the page.
 COARSE_STEP = 0x0100
 COARSE_PROBES = (0x00, 0x80)
@@ -104,19 +153,64 @@ COARSE_PROBES = (0x00, 0x80)
 OUTDIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class Bus:
-    """Modbus TCP, deliberately without a library.
+def crc16(frame):
+    """Modbus RTU checksum. Returned low byte first, as it goes on the wire."""
+    crc = 0xFFFF
+    for byte in frame:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return struct.pack("<H", crc)
 
-    Raw sockets, so that the transaction ID and length can be validated
-    here -- precisely the two things cheap gateways get wrong.
+
+class Bus:
+    """Modbus, deliberately without a library, in two modes.
+
+    mode "tcp"  -- Modbus TCP. The gateway converts to RTU itself. The only
+                   protection against a stray response is the transaction
+                   ID, which the gateway recycles, so a stale answer whose
+                   ID happens to match is accepted as genuine.
+
+    mode "rtu"  -- Modbus RTU over TCP. The gateway passes raw serial frames
+                   through (its protocol setting must be "None"/transparent,
+                   not "Modbus"). Every frame then carries a CRC16, so a
+                   stray or truncated response is caught with near certainty
+                   instead of being guessed at.
+
+    Raw sockets either way, so that the checks happen here rather than
+    inside a library that trusts the gateway.
     """
 
-    def __init__(self, host, port, unit, timeout):
+    def __init__(self, host, port, unit, timeout, mode="tcp"):
+        if mode not in ("tcp", "rtu"):
+            raise ValueError("mode must be 'tcp' or 'rtu'")
         self.host, self.port, self.timeout = host, port, timeout
         self.unit = unit
+        self.mode = mode
         self.sock = None
         self.tid = 0
         self.reads = 0
+        # Why a read was discarded. This is the measurement that says
+        # whether switching the gateway to transparent mode was worth it.
+        self.rejects = {
+            "crc": 0,             # rtu: checksum failed
+            "slave": 0,           # answer from a different slave address
+            "function": 0,        # function code not 3 and not an exception
+            "length": 0,          # byte count does not match the request
+            "foreign_tid": 0,     # tcp: transaction ID of another request
+            "stale_bytes": 0,     # bytes left over before a request
+            "timeout": 0,         # silence until the timeout expired
+            "closed": 0,          # the gateway dropped the connection
+            "exception": 0,       # device said no -- not an error
+        }
+        # Attempts that came back without a value for a reason other than
+        # the device saying no. One disturbance can trip several of the
+        # counters above (a foreign answer in tcp mode also costs a
+        # timeout), so the percentage is based on this instead.
+        self.failed = 0
         self.connect()
 
     def connect(self):
@@ -124,6 +218,45 @@ class Bus:
         self.sock = socket.create_connection(
             (self.host, self.port), timeout=self.timeout)
         self.sock.settimeout(self.timeout)
+
+    def _blame(self, exc):
+        """Silence and a dropped connection are different diagnoses.
+
+        Silence means the address does not exist, or the device is busy.
+        A drop means the gateway refused to talk to us at all -- typically
+        because another client already holds it. Counting both as "timeout"
+        sends you looking for a bus problem when the answer is that somebody
+        else is on the line.
+        """
+        if isinstance(exc, socket.timeout):
+            self.rejects["timeout"] += 1
+        else:
+            self.rejects["closed"] += 1
+
+    def drain(self):
+        """Discard anything still pending before sending a new request.
+
+        In RTU mode there is no transaction ID, so a leftover byte from a
+        previous exchange would shift every following frame by one and turn
+        a perfectly good answer into a CRC error. Cheap insurance, and the
+        counter doubles as a symptom report.
+        """
+        self.sock.setblocking(False)
+        dropped = 0
+        try:
+            while True:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                dropped += len(chunk)
+        except (BlockingIOError, OSError):
+            pass
+        finally:
+            self.sock.setblocking(True)
+            self.sock.settimeout(self.timeout)
+        if dropped:
+            self.rejects["stale_bytes"] += dropped
+        return dropped
 
     def close(self):
         if self.sock:
@@ -143,6 +276,72 @@ class Bus:
         return buf
 
     def _read_once(self, addr, count):
+        if self.mode == "rtu":
+            return self._read_once_rtu(addr, count)
+        return self._read_once_tcp(addr, count)
+
+    def _read_once_rtu(self, addr, count):
+        """Modbus RTU over TCP: raw serial frame, checked by CRC."""
+        self.drain()
+        req = struct.pack(">BBHH", self.unit, 3, addr, count)
+        req += crc16(req)
+
+        try:
+            self.sock.sendall(req)
+        except OSError as exc:
+            self.connect()
+            return None, "send error: %s" % exc
+
+        try:
+            head = self._recv_exact(3)          # slave, function, third byte
+        except (OSError, ConnectionError) as exc:
+            self._blame(exc)
+            self.connect()
+            return None, "no response: %s" % exc
+
+        slave, func, third = head[0], head[1], head[2]
+
+        if func & 0x80:                          # exception frame, 5 bytes
+            try:
+                rest = self._recv_exact(2)
+            except (OSError, ConnectionError) as exc:
+                self.connect()
+                return None, "response truncated: %s" % exc
+            if crc16(head) != rest:
+                self.rejects["crc"] += 1
+                self.drain()
+                return None, "crc error"
+            if slave != self.unit:
+                self.rejects["slave"] += 1
+                return None, "answer from slave %d" % slave
+            self.rejects["exception"] += 1
+            return None, "exception %d" % third
+
+        try:
+            rest = self._recv_exact(third + 2)   # payload + crc
+        except (OSError, ConnectionError) as exc:
+            self.rejects["length"] += 1
+            self.connect()
+            return None, "response truncated: %s" % exc
+
+        if crc16(head + rest[:third]) != rest[third:]:
+            self.rejects["crc"] += 1
+            self.drain()
+            return None, "crc error"
+        if slave != self.unit:
+            self.rejects["slave"] += 1
+            return None, "answer from slave %d" % slave
+        if func != 3:
+            self.rejects["function"] += 1
+            return None, "unexpected function code %d" % func
+        if third != count * 2:
+            self.rejects["length"] += 1
+            return None, "length mismatch (%d instead of %d)" % (
+                third, count * 2)
+
+        return list(struct.unpack(">%dH" % count, rest[:third])), None
+
+    def _read_once_tcp(self, addr, count):
         self.tid = (self.tid % 65530) + 1
         tid = self.tid
         req = struct.pack(">HHHBBHH", tid, 0, 6, self.unit, 3, addr, count)
@@ -161,32 +360,42 @@ class Bus:
             try:
                 head = self._recv_exact(6)
             except (OSError, ConnectionError) as exc:
+                self._blame(exc)
                 self.connect()
                 return None, "no response: %s" % exc
 
             rtid, pid, length = struct.unpack(">HHH", head)
             if length < 2 or length > 260:
+                self.rejects["length"] += 1
                 self.connect()
                 return None, "implausible length %d" % length
 
             try:
                 body = self._recv_exact(length)
             except (OSError, ConnectionError) as exc:
+                self.rejects["length"] += 1
                 self.connect()
                 return None, "response truncated: %s" % exc
 
-            if rtid != tid or pid != 0 or body[0] != self.unit:
+            if rtid != tid or pid != 0:
+                self.rejects["foreign_tid"] += 1
                 continue                      # foreign response, keep waiting
+            if body[0] != self.unit:
+                self.rejects["slave"] += 1
+                continue
 
             func = body[1]
             if func == 0x83:
+                self.rejects["exception"] += 1
                 return None, "exception %d" % body[2]
             if func != 3:
+                self.rejects["function"] += 1
                 return None, "unexpected function code %d" % func
 
             nbytes = body[2]
             payload = body[3:3 + nbytes]
             if nbytes != count * 2 or len(payload) != nbytes:
+                self.rejects["length"] += 1
                 return None, "length mismatch (%d instead of %d)" % (
                     nbytes, count * 2)
 
@@ -206,6 +415,7 @@ class Bus:
                 return vals, None
             if note and note.startswith("exception"):
                 return None, note
+            self.failed += 1
         return None, note
 
 
@@ -236,8 +446,22 @@ def discover(bus, start, end, fast=False):
         todo.append((addr, min(BLOCK, end - addr + 1)))
         addr += BLOCK
 
+    last = time.time()
+    span = max(1, end - start)
     while todo:
         a, n = todo.pop(0)
+        # A thorough range takes a quarter of an hour. Without a sign of
+        # life every so often that looks exactly like a hang, and the
+        # natural reaction is to abort a run that was working.
+        if time.time() - last >= 20:
+            # Position in the range, not a count of settled addresses:
+            # halved blocks are re-queued, so counting them double would
+            # produce a progress line reading "1220 of 1024".
+            print("    ... at 0x%04X (%d%% through the range), "
+                  "%d requests so far, %d addresses answering"
+                  % (a, 100 * (a - start) // span, bus.reads, len(valid)),
+                  flush=True)
+            last = time.time()
         vals, note = bus.read(a, n)
         if vals is not None:
             valid.extend(range(a, a + n))
@@ -307,6 +531,41 @@ def coarse_sweep(bus):
     return found
 
 
+LABELS = [
+    ("crc", "checksum failed (rtu only)"),
+    ("slave", "answer from a different slave address"),
+    ("function", "unexpected function code"),
+    ("length", "byte count did not match the request"),
+    ("foreign_tid", "foreign transaction ID (tcp only)"),
+    ("stale_bytes", "leftover bytes discarded before a request"),
+    ("timeout", "silence until the timeout expired"),
+    ("closed", "gateway closed the connection (another client?)"),
+]
+
+
+def quality_report(bus):
+    """Why reads were discarded -- the before/after measure for a gateway
+    change. Exceptions are excluded on purpose: they are the device
+    answering, not the link failing."""
+    lines = ["", "Link quality (%s mode), %d requests:" % (bus.mode, bus.reads)]
+    for key, text in LABELS:
+        lines.append("  %-12s %6d   %s" % (key, bus.rejects[key], text))
+    bad = bus.failed
+    lines.append("  %-12s %6d   device answered 'no' (not a fault)"
+                 % ("exception", bus.rejects["exception"]))
+    rate = (100.0 * bad / bus.reads) if bus.reads else 0.0
+    lines.append("  -> %d of %d attempts came back empty (%.2f %%)"
+                 % (bad, bus.reads, rate))
+    lines.append("     (counted once per attempt; the lines above are the")
+    lines.append("      breakdown by reason and can total higher, because one")
+    lines.append("      disturbance can trip two of them)")
+    if bus.mode == "tcp":
+        lines.append("  Note: in tcp mode a stray answer whose transaction ID")
+        lines.append("  happens to match is NOT counted here -- it cannot be.")
+        lines.append("  That is the reason for --rtu.")
+    return "\n".join(lines)
+
+
 def runs(addrs):
     """Group addresses into contiguous runs."""
     out = []
@@ -371,6 +630,7 @@ def scan(bus, sweep=False, fast=False):
         print("  pass %d/%d done" % (p + 1, PASSES), flush=True)
 
     print("\n%d Modbus requests in total." % bus.reads)
+    print(quality_report(bus))
 
     out = {}
     for a in sorted(samples):
@@ -388,7 +648,76 @@ def scan(bus, sweep=False, fast=False):
     return out, sweep_hits
 
 
-def write_report(data, label, host, unit, sweep_hits=None, swept=False):
+def benchmark(bus, rounds, label=""):
+    """Read the known blocks over and over and report the link quality.
+
+    This is the instrument for a gateway change, not the full scan. Reasons:
+
+    - A dead address answers with silence on this device, so probing it
+      costs a full timeout and tells you nothing about the link. Out of a
+      full scan, well over 90 % of the time is spent waiting for registers
+      that were never there.
+    - It mirrors what a client actually does in daily use: the same handful
+      of blocks, over and over.
+    - It takes minutes, so before and after can be measured on the same day,
+      under comparable conditions.
+
+    Values are checked for consistency as well: a register that changes
+    between rounds is normal for a measurement, but the run records how
+    often each block answered at all.
+    """
+    print("Benchmark: %d rounds over %d known blocks (%d registers), "
+          "%s mode" % (rounds, len(KNOWN_BLOCKS),
+                       sum(n for _, n in KNOWN_BLOCKS), bus.mode), flush=True)
+    per_block = {}
+    started = time.time()
+    for r in range(rounds):
+        for addr, count in KNOWN_BLOCKS:
+            key = "0x%04X+%d" % (addr, count)
+            rec = per_block.setdefault(key, {"ok": 0, "fail": 0, "notes": {}})
+            vals, note = bus.read(addr, count)
+            if vals is None:
+                rec["fail"] += 1
+                rec["notes"][note or "?"] = rec["notes"].get(note or "?", 0) + 1
+            else:
+                rec["ok"] += 1
+        if (r + 1) % 5 == 0 or r + 1 == rounds:
+            print("  round %d/%d, %d requests, %.0f s elapsed"
+                  % (r + 1, rounds, bus.reads, time.time() - started),
+                  flush=True)
+
+    print("\nPer block:")
+    print("  %-14s %6s %6s   %s" % ("block", "ok", "fail", "reasons"))
+    for key in sorted(per_block):
+        rec = per_block[key]
+        reasons = ", ".join("%s x%d" % (k, v)
+                            for k, v in sorted(rec["notes"].items()))
+        print("  %-14s %6d %6d   %s" % (key, rec["ok"], rec["fail"], reasons))
+    print(quality_report(bus))
+    print("\nDuration: %.0f s" % (time.time() - started))
+
+    # Write it down. A benchmark that only prints to a terminal cannot be
+    # held against the next one, which is the whole point of measuring.
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    name = "benchmark_%s_%s.json" % (label, stamp) if label \
+        else "benchmark_%s.json" % stamp
+    path = os.path.join(OUTDIR, name)
+    with open(path, "w") as fh:
+        json.dump({"created": datetime.now().isoformat(timespec="seconds"),
+                   "label": label,
+                   "mode": bus.mode,
+                   "rounds": rounds,
+                   "requests": bus.reads,
+                   "rejects": dict(bus.rejects),
+                   "failed_attempts": bus.failed,
+                   "seconds": round(time.time() - started, 1),
+                   "blocks": per_block}, fh, indent=1)
+    print("written:\n  %s" % path)
+    return per_block
+
+
+def write_report(data, label, host, unit, sweep_hits=None, swept=False,
+                 bus=None):
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     base = "regdump_%s_%s" % (label, stamp) if label else "regdump_%s" % stamp
     jpath = os.path.join(OUTDIR, base + ".json")
@@ -404,6 +733,11 @@ def write_report(data, label, host, unit, sweep_hits=None, swept=False):
         "sweep_hits": ["0x%04X" % p for p in (sweep_hits or [])],
         "registers": data,
     }
+    if bus is not None:
+        meta["mode"] = bus.mode
+        meta["requests"] = bus.reads
+        meta["rejects"] = dict(bus.rejects)
+        meta["failed_attempts"] = bus.failed
     with open(jpath, "w") as fh:
         json.dump(meta, fh, indent=1, ensure_ascii=False)
 
@@ -411,7 +745,10 @@ def write_report(data, label, host, unit, sweep_hits=None, swept=False):
     lines = ["Register dump Jupiter C Plus",
              "created: %s" % meta["created"],
              "label:   %s" % (label or "-"),
-             ""]
+             "mode:    %s" % (bus.mode if bus else "tcp")]
+    if bus is not None:
+        lines += quality_report(bus).splitlines()
+    lines.append("")
     if swept:
         if sweep_hits:
             lines.append("Coarse sweep over 0x0000-0xFFFF: hits on %s"
@@ -463,6 +800,66 @@ def load(path):
     return blob.get("registers") or blob["register"]
 
 
+def load_meta(path):
+    """The run's own metadata -- mode and reject counters, absent in dumps
+    written before those existed."""
+    with open(path) as fh:
+        blob = json.load(fh)
+    if not isinstance(blob, dict) or "rejects" not in blob:
+        return None
+    return {"mode": blob.get("mode", "?"),
+            "requests": blob.get("requests", 0),
+            "rejects": blob["rejects"],
+            # Dumps from before that counter existed: fall back to the sum
+            # of the reasons and say so, because one disturbance can trip
+            # two of them and the sum is therefore an upper bound.
+            "failed": blob.get("failed_attempts"),
+            "failed_exact": "failed_attempts" in blob,
+            "label": blob.get("label") or os.path.basename(path)}
+
+
+def quality_diff(a, b):
+    """Two runs side by side: did the gateway change help?
+
+    Exceptions are left out -- they are the device answering, not the link
+    failing, and their number depends on how much empty space was scanned.
+    """
+    if not (a and b):
+        print("\n(No link-quality comparison: at least one dump predates "
+              "the counters.)")
+        return
+    print("\n==== Link quality ====")
+    print("  %-14s %22s %22s" % ("", a["label"], b["label"]))
+    print("  %-14s %22s %22s"
+          % ("mode", a["mode"], b["mode"]))
+    print("  %-14s %22d %22d" % ("requests", a["requests"], b["requests"]))
+    for key, text in LABELS:
+        print("  %-14s %22d %22d   %s"
+              % (key, a["rejects"].get(key, 0), b["rejects"].get(key, 0), text))
+    def empties(run):
+        if run.get("failed_exact"):
+            return run["failed"], ""
+        total = sum(v for k, v in run["rejects"].items()
+                    if k not in ("exception", "stale_bytes"))
+        return total, "~"
+    fa, ma = empties(a)
+    fb, mb = empties(b)
+    ra = 100.0 * fa / a["requests"] if a["requests"] else 0.0
+    rb = 100.0 * fb / b["requests"] if b["requests"] else 0.0
+    print("  %-14s %21s%d %21s%d   attempts that came back empty"
+          % ("empty", ma, fa, mb, fb))
+    print("  %-14s %21.2f%% %21.2f%%" % ("", ra, rb))
+    if ma or mb:
+        print("\n  ~ = older dump without the per-attempt counter. The value")
+        print("  is the sum of the reasons, which is an upper bound: in tcp")
+        print("  mode one disturbance trips both foreign_tid and timeout.")
+    if a["mode"] != b["mode"]:
+        print("\n  Different modes, so read the numbers with care: the tcp")
+        print("  figure is a lower bound. A stale answer whose transaction")
+        print("  ID happens to match is counted nowhere -- that is the")
+        print("  failure --rtu exists to expose.")
+
+
 def _value(entry):
     if entry is None:
         return None
@@ -503,6 +900,7 @@ def diff(old, new):
 
 
 def main():
+    global DELAY, TIMEOUT, RETRY
     ap = argparse.ArgumentParser(
         description="Register dump for the Marstek Jupiter C Plus")
     ap.add_argument("--host", default=HOST,
@@ -512,8 +910,38 @@ def main():
     ap.add_argument("--unit", type=int, default=UNIT,
                     help="Modbus slave address (default: %d)" % UNIT)
     ap.add_argument("--label", default="", help="name for the output file")
+    ap.add_argument("--rtu", action="store_true",
+                    help="speak Modbus RTU over TCP instead of Modbus TCP. "
+                         "Requires the gateway's protocol to be set to "
+                         "'None'/transparent. Frames then carry a CRC16 and "
+                         "the socket is drained before each request, so "
+                         "merged, split and misaligned answers fail loudly "
+                         "instead of being guessed at")
     ap.add_argument("--sweep", action="store_true",
                     help="also sweep 0x0000-0xFFFF coarsely")
+    ap.add_argument("--delay", type=float, default=DELAY,
+                    help="seconds between two requests (default: %.2f). "
+                         "Deliberately slow so the bus carries only a little "
+                         "extra load next to your normal polling. Lower it "
+                         "and watch the link quality tally at the end -- "
+                         "that is how you find your gateway's real limit"
+                         % DELAY)
+    ap.add_argument("--benchmark", type=int, metavar="ROUNDS", nargs="?",
+                    const=20,
+                    help="do not scan: read the known blocks ROUNDS times "
+                         "(default 20) and report the link quality. This is "
+                         "the measurement for a gateway change -- minutes "
+                         "instead of hours, because it does not wait on "
+                         "addresses that were never there")
+    ap.add_argument("--timeout", type=float, default=TIMEOUT,
+                    help="seconds to wait for an answer (default: %.1f). On "
+                         "this device a non-existent address does not answer "
+                         "at all, so the timeout is what a full scan spends "
+                         "most of its time on" % TIMEOUT)
+    ap.add_argument("--retries", type=int, default=RETRY,
+                    help="retries after a timeout (default: %d). Exceptions "
+                         "are never retried -- they are the device speaking"
+                         % RETRY)
     ap.add_argument("--fast", action="store_true",
                     help="skip empty 8-register blocks after probing both "
                          "ends instead of halving down to single registers. "
@@ -531,9 +959,28 @@ def main():
         if not args.diff:
             ap.error("--diff-only also needs --diff <old file>")
         diff(load(args.diff), load(args.diff_only))
+        quality_diff(load_meta(args.diff), load_meta(args.diff_only))
         return
 
-    bus = Bus(args.host, args.port, args.unit, TIMEOUT)
+    DELAY = args.delay
+    TIMEOUT = args.timeout
+    RETRY = args.retries
+
+    try:
+        bus = Bus(args.host, args.port, args.unit, TIMEOUT,
+                  mode="rtu" if args.rtu else "tcp")
+    except OSError as exc:
+        print("No connection to %s:%d -- %s" % (args.host, args.port, exc))
+        print("Check the address, and that the gateway is reachable from")
+        print("this machine. Nothing was read, nothing was written.")
+        return 1
+    if args.benchmark:
+        try:
+            benchmark(bus, args.benchmark, args.label)
+        finally:
+            bus.close()
+        return 0
+
     try:
         data, hits = scan(bus, sweep=args.sweep, fast=args.fast)
     finally:
@@ -547,10 +994,15 @@ def main():
         print("The unsafe ones are marked 'NO' in the text file -- that is")
         print("where the gateway interfered. Repeat the run if needed.")
 
-    write_report(data, args.label, args.host, args.unit, hits, args.sweep)
+    write_report(data, args.label, args.host, args.unit, hits, args.sweep,
+                 bus=bus)
 
     if args.diff:
         diff(load(args.diff), data)
+        quality_diff(load_meta(args.diff),
+                     {"mode": bus.mode, "requests": bus.reads,
+                      "rejects": bus.rejects, "failed": bus.failed,
+                      "label": args.label or "this run"})
 
 
 if __name__ == "__main__":
