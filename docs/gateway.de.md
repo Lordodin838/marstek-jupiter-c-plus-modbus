@@ -214,45 +214,47 @@ als `exception 2` im Abzug, obwohl das Gerät dazu nie befragt wurde. Jetzt steh
 dort `not probed (--fast)`.
 
 `--fast` taugt für eine grobe Grenzprüfung. Nicht für einen Abzug, den du später
-vergleichen willst. Beim Jupiter C Plus bewirkt es gar nichts, weil das Gerät
-nie mit Exception 2 antwortet — siehe den nächsten Abschnitt.
+vergleichen willst.
 
 ### Was ein vollständiger Scan wirklich kostet, und warum
 
-**Eine nicht vorhandene Adresse antwortet bei diesem Gerät gar nicht.** Sie
-liefert keine Exception 2 — sie schweigt, und die Abzüge halten das als
-`keine Antwort: timed out` fest. Jede Probe im Leeren kostet damit einen vollen
-Timeout, mal Anzahl der Versuche.
+Zwei Arten von „hier ist nichts", gemessen am 29. September 2026 bei Unit 1 und
+Unit 11 gleichermaßen (Einzelheiten in der
+[Registerkarte](register-map.de.md#lücke-0x00260x0029)):
 
-**Und nach so einer Anfrage braucht das Gerät rund zwei Sekunden, bevor es die
-nächste annimmt** (gemessen, siehe unten). Ein kürzerer Client-Timeout
-verschwendet dann nicht nur Zeit: die nächste Anfrage kommt an, während das
-Gerät noch beschäftigt ist, und bei einem Gateway, das nur einen Client zulässt,
-wird die neue Verbindung abgewiesen. Der Scan verliert dann Register, ohne es zu
-merken.
+- **Fast jede nicht vorhandene Adresse wird mit Exception 2 abgelehnt**, in rund
+  0,21 s. Billig, und nie wiederholt — eine Exception ist das Gerät, das spricht.
+- **Die vier Adressen `0x0026`–`0x0029` bekommen gar keine Antwort**, und danach
+  braucht das Gerät 2–3 s, bis es die nächste Anfrage annimmt.
 
-Der Timeout hat also eine Untergrenze, und die ist nicht klein:
+Die zweite Art betrifft nur vier Adressen, aber sie bestimmt die Untergrenze des
+Timeouts. Ein Client-Timeout unter der Besetzt-Zeit verschwendet nicht nur Zeit:
+die nächste Anfrage trifft auf ein noch beschäftigtes Gerät, das Gateway mit
+nur einem Client weist die neue Verbindung ab, und jede abgewiesene Probe wird
+als tote Adresse verbucht. Am Testgerät hat ein Timeout von 0,3 s 7 von 61
+Registern verloren, `0x002A` darunter — und war *schneller* fertig als ein
+korrekter Lauf. Der Scanner sagt das jetzt in Großbuchstaben, wenn es passiert.
 
-| Einstellungen | Kosten je toter Adresse | Gründlicher Scan, 3 × 1024 Adressen |
+| Einstellungen | Gründlicher Scan, 3 × 1024 Adressen | Alle 65536 Adressen |
 |---|---|---|
-| Standard: `--timeout 4 --retries 2 --delay 0.45` | ~13 s | ~13 Stunden |
-| kalibriert: `--timeout 4.5 --retries 0 --delay 0.1` | ~4,6 s | **~4,4 Stunden** |
+| Standard: `--timeout 4 --retries 2 --delay 0.45` | ~40 min | ~12 h |
+| abgestimmt: `--timeout 4.5 --retries 0 --delay 0.1` | ~20 min | **~6 h** |
 
-Wiederholungen bringen bei einer schweigenden Adresse nichts — die Stille ist die
-Antwort. Die drei Lesedurchgänge über jedes gefundene Register sichern die
-Werte trotzdem ab.
+Der Einzelregister-Durchlauf über den ganzen Adressraum ist damit eine Nacht,
+kein Wochenende. Gelaufen ist er noch nicht.
 
-`--fast` hat bei diesem Gerät **keine Wirkung**: die Abkürzung braucht Exception 2,
-und der Jupiter schweigt stattdessen. Eine frühere Fassung dieser Seite hat damit
-rund 45 Minuten versprochen. Das war falsch.
+**Korrektur.** Eine frühere Fassung dieser Seite vom selben Tag behauptete, *jede*
+nicht vorhandene Adresse schweige, setzte den gründlichen Scan mit rund 4,4
+Stunden an und den vollen Durchlauf mit 84, und schrieb, `--fast` wirke bei
+diesem Gerät nicht. Alle drei Aussagen kamen daher, dass die Lücke verallgemeinert
+wurde: die toten Adressen, die man sich genauer angesehen hatte — `0x0028` im
+alten Abzug, `0x0026` in der Kalibrierung —, liegen beide darin. `--fast` wirkt
+hier sehr wohl, überall außer in der Lücke.
 
-Ein Einzelregister-Durchlauf über alle 65536 Adressen würde mit den
-kalibrierten Werten rund 84 Stunden dauern. Deshalb ist er nicht gemacht worden.
-
-**Um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Fast die
-gesamte Scanzeit vergeht mit Warten auf Register, die es nie gab — das sagt über
-die Verbindung nichts. `--benchmark` liest stattdessen die bekannten Blöcke immer
-wieder: Minuten statt Stunden, und es bildet ab, was ein Client im Alltag tut.
+**Um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Ein Scan
+verbringt seine Zeit im leeren Adressraum, und das sagt über die Verbindung
+nichts. `--benchmark` liest stattdessen die bekannten Blöcke immer wieder:
+Minuten, und es bildet ab, was ein Client im Alltag tut.
 
 ---
 
@@ -267,21 +269,25 @@ neuer Client wieder eine echte Antwort bekommt. Zweimal gelaufen, einmal mit
 |---|---|---|
 | Antwortzeit eines echten Registers, Median | 219 ms | 512 ms |
 | Antwortzeit eines echten Registers, maximal | 330 ms | 620 ms |
-| Anfrage an die tote Adresse `0x0026` | Stille, 10 s | Stille, 10 s — **keine Exception 11** |
-| Nächste echte Antwort möglich nach | 2–3 s | 1,5–2 s |
+| Anfrage in die Lücke, `0x0026` | Stille, 10 s | Stille, 10 s — **keine Exception 11** |
+| Nächste echte Antwort danach möglich nach | 2–3 s | 1,5–2 s |
+| Gewöhnliche nicht vorhandene Adresse, z. B. `0x0030` | Exception 2, 0,21 s | (später gemessen, auf Auto) |
 
 **Die Zeit braucht das Gerät, nicht das Gateway.** Hätte das Gateway gebremst,
 hätten feste 1000 ms die Besetzt-Zeit auf etwa eine Sekunde gedrückt. Sie blieb
 bei rund zwei. Eine zweite Beobachtung zeigt in dieselbe Richtung: der
 Unit-Durchlauf hat 245 nicht vorhandene Unit-IDs mit 2 s Timeout abgefragt, und
 keine einzige neue Verbindung wurde abgewiesen. Eine Anfrage an niemanden
-beschäftigt den Jupiter nicht; eine Anfrage an ihn, nach einem Register, das er
-nicht hat, sehr wohl.
+beschäftigt den Jupiter nicht, und eine nach einem gewöhnlichen nicht vorhandenen
+Register auch nicht — die kommt in einer Fünftelsekunde als Exception 2 zurück.
+Eine Anfrage in die Lücke tut es.
 
-**Deshalb hat der 5-s-Timeout weiter oben geholfen.** Ein Client-Timeout von 3 s
-stand genau auf der Kante einer Besetzt-Zeit von 2–3 s — manchmal genug, unter Last
-oft nicht. 5 s lagen sicher darüber. Die Abhilfe wurde im September ausprobiert;
-das hier ist der Mechanismus dahinter.
+**Vermutlich deshalb hat der 5-s-Timeout weiter oben geholfen.** Ein
+Client-Timeout von 3 s stand genau auf der Kante einer Besetzt-Zeit von 2–3 s —
+manchmal genug, unter Last oft nicht —, sobald ein Client die Lücke berührte, wozu
+Karten verleiteten, die den Datenblock bis `0x0027` reichen ließen. 5 s lagen
+sicher darüber. Die Abhilfe wurde im September ausprobiert; das hier ist der
+wahrscheinlichste Mechanismus dahinter.
 
 **`Modbus TimeOut` auf Auto lassen.** Ein fester Wert brachte keine Exception 11,
 keine kürzere Besetzt-Zeit, dafür langsamere und unruhigere Antworten — mit
@@ -293,7 +299,9 @@ nichts.
 Was das am Scanner geändert hat: scheitert ein Block, geht er jetzt direkt auf
 Einzelregister, statt 8 → 4 → 2 → 1 zu halbieren. Ein toter 8er-Block kostet 9
 Proben statt 15, das Ergebnis ist identisch, `0x002A` eingeschlossen. Am
-Testgerät: 3454 statt 5700 Anfragen für den gründlichen Scan.
+Testgerät: 3454 statt 5700 Anfragen für den gründlichen Scan. Und `--calibrate`
+misst jetzt eine gewöhnliche tote Adresse und die Lücke getrennt — die erste
+Fassung nahm `0x0026` für beides, und so wurde die Lücke für die Regel gehalten.
 
 ---
 

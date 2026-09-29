@@ -96,11 +96,29 @@ measured on an E. Readings from an E are welcome as an issue.
 
 ## Gap `0x0026`–`0x0029`
 
-Do not answer. Any read that overlaps them fails completely, including a read that
-starts inside the valid block — see [gateway.md](gateway.md#the-three-device-quirks).
+Do not answer — and that is unusual. Measured 29 September 2026, on unit 1 and
+unit 11 alike:
 
-Earlier maps listed values at `0x0026`/`0x0027`. Those were stray responses from a
-desynchronised TCP gateway, not device data.
+| Addresses | Answer | Time |
+|---|---|---|
+| `0x0026`–`0x0029` | **none** | full timeout |
+| every other non-existent address tried: `0x002B`, `0x0030`, `0x0100`, `0x100B`, `0x1106`, `0x4000`, and 3007 more in a full scan of unit 11 | exception 2 | ~0.21 s |
+
+An address that does not exist gets exception 2. These four get nothing, and
+afterwards the device needs 2–3 s before it takes the next request
+([measured](gateway.md#measured-timing-29-september-2026)). The firmware treats
+them differently from empty address space.
+
+Any read that overlaps them fails completely, including a read that starts
+inside the valid block — see [gateway.md](gateway.md#the-three-device-quirks).
+
+Earlier maps listed values at `0x0026`/`0x0027`. They have so far been put down to
+a desynchronised gateway. A possibly better explanation, **not yet tested**: the
+device does answer these four, but only after two or three seconds. The EE11 has
+given up by then and does not pass the answer on. That would account for the
+silence, for the busy time afterwards, and for a late answer landing on the next
+request as a phantom value. A read with a long fixed `Modbus TimeOut` on the
+gateway would settle it.
 
 ## Isolated register `0x002A`
 

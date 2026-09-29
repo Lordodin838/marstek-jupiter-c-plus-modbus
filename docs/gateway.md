@@ -207,43 +207,45 @@ although the device was never asked about them. They now read `not probed
 (--fast)` instead.
 
 Use `--fast` for a rough boundary check. Never for a dump you intend to diff.
-On the Jupiter C Plus it does nothing at all, because the device never answers
-with exception 2 — see the next section.
 
 ### What a full scan really costs, and why
 
-**A non-existent address on this device does not answer at all.** It does not
-return exception 2 — it stays silent, and the dumps record it as
-`keine Antwort: timed out`. Every probe of empty space therefore costs a full
-timeout, times the number of attempts.
+Two kinds of "nothing here", measured 29 September 2026 on unit 1 and unit 11
+alike (details in the [register map](register-map.md#gap-0x00260x0029)):
 
-**And after such a request the device needs about two seconds before it takes
-the next one** (measured, see below). A client timeout shorter than that does
-not merely waste time: the next request arrives while the device is still
-busy, and on a gateway that admits one client the reconnect is refused. The
-scan then misses registers without saying so.
+- **Almost every non-existent address is rejected with exception 2**, in about
+  0.21 s. Cheap, and never retried — an exception is the device speaking.
+- **The four addresses `0x0026`–`0x0029` get no answer at all**, and afterwards
+  the device needs 2–3 s before it takes the next request.
 
-So the timeout has a floor, and it is not small:
+The second kind is only four addresses, but it sets the floor for the timeout.
+A client timeout shorter than the busy time does not merely waste time: the next
+request arrives while the device is still occupied, the single-client gateway
+refuses the reconnect, and every refused probe is booked as a dead address. On
+the test device a 0.3 s timeout lost 7 of 61 registers, `0x002A` among them — and
+finished *faster* than a correct run. The scanner now says so in capitals when
+it happens.
 
-| Settings | Cost per dead address | Thorough scan, 3 × 1024 addresses |
+| Settings | Thorough scan, 3 × 1024 addresses | All 65536 addresses |
 |---|---|---|
-| defaults: `--timeout 4 --retries 2 --delay 0.45` | ~13 s | ~13 hours |
-| calibrated: `--timeout 4.5 --retries 0 --delay 0.1` | ~4.6 s | **~4.4 hours** |
+| defaults: `--timeout 4 --retries 2 --delay 0.45` | ~40 min | ~12 h |
+| tuned: `--timeout 4.5 --retries 0 --delay 0.1` | ~20 min | **~6 h** |
 
-Retries buy nothing on a silent address — silence is the answer. The three
-read passes over every register that was found still guard the values.
+The single-register sweep over the whole address space is therefore a night's
+work, not a weekend's. It has not been run yet.
 
-`--fast` has **no effect** on this device: its shortcut needs exception 2, and
-the Jupiter stays silent instead. An earlier version of this page promised
-about 45 minutes with it. That was wrong.
+**Correction.** An earlier version of this page, written the same day, stated
+that *every* non-existent address stays silent, put the thorough scan at about
+4.4 hours and the full sweep at 84, and claimed `--fast` had no effect on this
+device. All three came from generalising the gap: the dead addresses that had been
+looked at closely — `0x0028` in the old dump, `0x0026` in the calibration — are
+both in it. `--fast` does work here,
+everywhere except the gap.
 
-A single-register sweep over all 65536 addresses would take roughly 84 hours at
-the calibrated setting. That is why it has not been done.
-
-**For judging a gateway change, do not scan at all.** Nearly all of a scan's
-time is spent waiting on registers that were never there, which says nothing
-about the link. `--benchmark` reads the known blocks over and over instead:
-minutes rather than hours, and it mirrors what a client does in daily use.
+**For judging a gateway change, do not scan at all.** A scan spends its time on
+empty address space, which says nothing about the link. `--benchmark` reads the
+known blocks over and over instead: minutes, and it mirrors what a client does
+in daily use.
 
 ---
 
@@ -258,20 +260,23 @@ EE11's `Modbus TimeOut` on *Auto* and once with a fixed 1000 ms:
 |---|---|---|
 | Response time of a real register, median | 219 ms | 512 ms |
 | Response time of a real register, max | 330 ms | 620 ms |
-| Request to dead address `0x0026` | silence, 10 s | silence, 10 s — **no exception 11** |
-| Next real answer possible after | 2–3 s | 1.5–2 s |
+| Request into the gap, `0x0026` | silence, 10 s | silence, 10 s — **no exception 11** |
+| Next real answer possible after that | 2–3 s | 1.5–2 s |
+| Ordinary non-existent address, e.g. `0x0030` | exception 2, 0.21 s | (measured later, on Auto) |
 
 **The device, not the gateway, needs the time.** Had the gateway been holding
 things up, a fixed 1000 ms would have brought the busy time down to about a
 second. It stayed near two. A second observation points the same way: the unit
 sweep asked 245 non-existent unit IDs with a 2 s timeout and not one reconnect
-was refused. A request addressed to nobody does not occupy the Jupiter; a
-request addressed to it, for a register it does not have, does.
+was refused. A request addressed to nobody does not occupy the Jupiter, and
+neither does a request for an ordinary non-existent register, which comes back
+as exception 2 in a fifth of a second. A request into the gap does.
 
-**This is why the 5 s timeout above fixed things.** A 3 s client timeout sat
-right on the edge of a 2–3 s busy time — sometimes enough, under load often not.
-5 s cleared it. The fix was found by trial in September; this is the mechanism
-behind it.
+**This is probably why the 5 s timeout above fixed things.** A 3 s client
+timeout sat right on the edge of a 2–3 s busy time — sometimes enough, under load
+often not — whenever a client touched the gap, as maps that let the data block
+run to `0x0027` invited. 5 s cleared it. The fix was found by trial in September;
+this is the likeliest mechanism behind it.
 
 **Leave `Modbus TimeOut` on Auto.** A fixed value produced no exception 11, no
 shorter busy time, and slower, more scattered answers — at 620 ms uncomfortably
@@ -282,7 +287,9 @@ nothing on the other side of the scale.
 What this changed in the scanner: when a block fails, it now goes straight to
 single registers instead of halving 8 → 4 → 2 → 1. A dead 8-block costs 9
 probes instead of 15, the result is identical, `0x002A` included. On the test
-device: 5700 requests down to 3454 for the thorough scan.
+device: 5700 requests down to 3454 for the thorough scan. And `--calibrate` now
+measures an ordinary dead address and the gap separately — the first version
+used `0x0026` for both, which is how the gap got mistaken for the rule.
 
 ---
 

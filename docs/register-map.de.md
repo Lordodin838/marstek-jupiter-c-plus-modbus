@@ -97,12 +97,30 @@ hier nichts an einem E. Messwerte von einem E gerne als Issue.
 
 ## Lücke `0x0026`–`0x0029`
 
-Antworten nicht. Jede Anfrage, die sie überlappt, scheitert vollständig — auch
-eine, die im gültigen Block beginnt, siehe
+Antworten nicht — und das ist ungewöhnlich. Gemessen am 29. September 2026, bei
+Unit 1 und Unit 11 gleichermaßen:
+
+| Adressen | Antwort | Zeit |
+|---|---|---|
+| `0x0026`–`0x0029` | **keine** | voller Timeout |
+| jede andere geprüfte nicht vorhandene Adresse: `0x002B`, `0x0030`, `0x0100`, `0x100B`, `0x1106`, `0x4000`, dazu 3007 weitere im vollen Scan von Unit 11 | Exception 2 | ~0,21 s |
+
+Eine Adresse, die es nicht gibt, bekommt Exception 2. Diese vier bekommen gar
+nichts, und danach braucht das Gerät 2–3 s, bis es die nächste Anfrage annimmt
+([gemessen](gateway.de.md#gemessene-zeiten-29-september-2026)). Die Firmware
+behandelt sie anders als leeren Adressraum.
+
+Jede Anfrage, die sie überlappt, scheitert vollständig — auch eine, die im
+gültigen Block beginnt, siehe
 [gateway.de.md](gateway.de.md#die-drei-geräteeigenschaften).
 
-Frühere Karten führten Werte auf `0x0026`/`0x0027`. Das waren verirrte Antworten
-eines aus dem Tritt geratenen TCP-Gateways, keine Gerätedaten.
+Frühere Karten führten Werte auf `0x0026`/`0x0027`. Die wurden bisher einem aus
+dem Tritt geratenen Gateway zugeschrieben. Eine möglicherweise bessere Erklärung,
+**noch nicht geprüft**: das Gerät beantwortet diese vier sehr wohl, aber erst
+nach zwei, drei Sekunden. Der EE11 hat bis dahin aufgegeben und reicht die
+Antwort nicht weiter. Das erklärte die Stille, die Besetzt-Zeit danach, und wie
+eine späte Antwort als Phantomwert bei der nächsten Anfrage landen kann. Eine
+Lesung mit langem festem `Modbus TimeOut` am Gateway würde es klären.
 
 ## Isoliertes Register `0x002A`
 
