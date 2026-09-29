@@ -209,16 +209,25 @@ class Bus:
         return None, note
 
 
-def discover(bus, start, end):
+def discover(bus, start, end, fast=False):
     """Find the actual boundaries of valid ranges.
 
     A block reaching even partially into nothing fails entirely. So: halve
     on failure and check both halves separately, down to single registers.
+    That is the only method that also finds an isolated register with dead
+    neighbours on both sides, such as 0x002A.
 
-    Shortcut for large empty zones: if an 8-register block reports
-    exception 2 (illegal address) and its first and last register report
-    exception 2 individually as well, the whole block counts as empty.
-    That saves walking through hundreds of non-existent addresses.
+    fast=True enables a shortcut for large empty zones: if an 8-register
+    block reports exception 2 (illegal address) and its first and last
+    register report exception 2 individually as well, the whole block counts
+    as empty. It saves roughly two thirds of the requests --
+
+    -- and it is WRONG in exactly the case this repository exists for. A
+    register sitting alone inside such a block is never probed, and the six
+    addresses in between are written into the dump as "exception 2" although
+    the device never said so about them. 0x002A is precisely that case, and
+    a test run with the shortcut on loses it silently. Hence: off by default,
+    and behind --fast for anyone who only wants a rough boundary check.
     """
     valid, dead = [], {}
     todo = []
@@ -236,13 +245,17 @@ def discover(bus, start, end):
         if n == 1:
             dead[a] = note
             continue
-        if note == "exception 2" and n == BLOCK:
+        if fast and note == "exception 2" and n == BLOCK:
             v1, n1 = bus.read(a, 1)
             v2, n2 = bus.read(a + n - 1, 1)
             if v1 is None and n1 == "exception 2" and \
                v2 is None and n2 == "exception 2":
-                for x in range(a, a + n):
-                    dead[x] = "exception 2"
+                dead[a] = "exception 2"
+                dead[a + n - 1] = "exception 2"
+                for x in range(a + 1, a + n - 1):
+                    # Not probed. Saying "exception 2" here would put words
+                    # into the device's mouth.
+                    dead[x] = "not probed (--fast)"
                 continue
             if v1 is not None:
                 valid.append(a)
@@ -318,7 +331,7 @@ def majority(values):
     return best, hits >= 2
 
 
-def scan(bus, sweep=False):
+def scan(bus, sweep=False, fast=False):
     samples, notes, area = {}, {}, {}
     all_runs = []
     sweep_hits = []
@@ -334,7 +347,7 @@ def scan(bus, sweep=False):
     for start, end, label in todo_ranges:
         print("Boundary search %s (0x%04X-0x%04X) ..." % (label, start, end),
               flush=True)
-        valid, dead = discover(bus, start, end)
+        valid, dead = discover(bus, start, end, fast=fast)
         print("  %d of %d addresses respond"
               % (len(valid), end - start + 1), flush=True)
         for a, note in dead.items():
@@ -501,6 +514,13 @@ def main():
     ap.add_argument("--label", default="", help="name for the output file")
     ap.add_argument("--sweep", action="store_true",
                     help="also sweep 0x0000-0xFFFF coarsely")
+    ap.add_argument("--fast", action="store_true",
+                    help="skip empty 8-register blocks after probing both "
+                         "ends instead of halving down to single registers. "
+                         "Roughly three times quicker and loses isolated "
+                         "registers such as 0x002A -- only for a rough "
+                         "boundary check, never for a dump you intend to "
+                         "diff against")
     ap.add_argument("--diff", metavar="OLD.JSON",
                     help="hold a fresh dump against this file")
     ap.add_argument("--diff-only", metavar="NEW.JSON",
@@ -515,7 +535,7 @@ def main():
 
     bus = Bus(args.host, args.port, args.unit, TIMEOUT)
     try:
-        data, hits = scan(bus, sweep=args.sweep)
+        data, hits = scan(bus, sweep=args.sweep, fast=args.fast)
     finally:
         bus.close()
 
