@@ -42,8 +42,8 @@ Three device properties that explain the design
    0x0001-0x0007, because the block started at 0x0000 and 0x0000 does not
    exist. Likewise 0x1008-0x100A dropped out, because that block would have
    reached to 0x100F.
-   Hence the two-phase scan: find the boundaries first (halving blocks on
-   failure, down to single registers), then read the discovered ranges.
+   Hence the two-phase scan: find the boundaries first (a block that
+   fails is probed register by register), then read the discovered ranges.
 
 3. The RS485-to-Ethernet gateway handles one request at a time and will
    pass foreign responses through when the transaction ID matches. While
@@ -102,7 +102,7 @@ HONEST LIMITATION of that method: it finds blocks, not loners. A single
 valid register between dead neighbours -- such as 0x002A -- makes every
 8-register probe fail and stays invisible. That is exactly how the first
 full scan missed 0x002A. To find isolated registers, put the range into
-RANGES, where blocks get halved.
+RANGES, where a failing block is probed register by register.
 """
 
 import argparse
@@ -128,7 +128,8 @@ DELAY = 0.45                # seconds between two requests. Deliberately
 TIMEOUT = 4.0
 RETRY = 2                   # retries on timeout
 
-# Ranges scanned thoroughly -- blocks are halved on failure here, so
+# Ranges scanned thoroughly -- a failing block is probed register by
+# register here, so
 # isolated single registers are found too. Widened from 0x100 to 0x400
 # each after 0x002A showed that Marstek also places registers outside the
 # known blocks.
@@ -516,8 +517,8 @@ class Bus:
 def discover(bus, start, end, fast=False):
     """Find the actual boundaries of valid ranges.
 
-    A block reaching even partially into nothing fails entirely. So: halve
-    on failure and check both halves separately, down to single registers.
+    A block reaching even partially into nothing fails entirely. So: when
+    a block fails, probe each of its registers on its own.
     That is the only method that also finds an isolated register with dead
     neighbours on both sides, such as 0x002A.
 
@@ -549,8 +550,8 @@ def discover(bus, start, end, fast=False):
         # natural reaction is to abort a run that was working.
         if time.time() - last >= 20:
             # Position in the range, not a count of settled addresses:
-            # halved blocks are re-queued, so counting them double would
-            # produce a progress line reading "1220 of 1024".
+            # failed blocks are re-queued as singles, so counting them
+            # double would produce a progress line reading "1220 of 1024".
             print("    ... at 0x%04X (%d%% through the range), "
                   "%d requests so far, %d addresses answering"
                   % (a, 100 * (a - start) // span, bus.reads, len(valid)),
@@ -582,9 +583,15 @@ def discover(bus, start, end, fast=False):
             if n > 2:
                 todo.insert(0, (a + 1, n - 2))
             continue
-        half = n // 2
-        todo.insert(0, (a + half, n - half))
-        todo.insert(0, (a, half))
+        # Straight to single registers instead of halving 8 -> 4 -> 2 -> 1.
+        # On this device a dead address does not answer at all, and the
+        # device then needs about two seconds before it takes the next
+        # request (measured 29.09.2026). Every failing probe therefore costs
+        # a full timeout. Halving spends 15 probes on a dead 8-block
+        # (1 + 2 + 4 + 8); going straight to singles spends 9 (1 + 8), and
+        # finds exactly the same registers -- 0x002A included.
+        for x in range(a + n - 1, a - 1, -1):
+            todo.insert(0, (x, 1))
 
     return sorted(set(valid)), dead
 
@@ -968,6 +975,10 @@ def probe(bus, units=True):
 
 
 DEAD_ADDRESS = 0x0026   # documented as non-existent on the Jupiter C Plus
+# Probes a thorough scan of RANGES (3 x 1024 addresses) needs on a Jupiter C
+# Plus, counted against the test device: one per 8-block plus one per
+# address of every block that fails. Used only for the runtime estimate.
+THOROUGH_PROBES = 3450
 LIVE_ADDRESS = 0x0010   # state of charge, always present
 
 
@@ -1119,7 +1130,7 @@ def calibrate(host, port, unit, mode):
         per = cost + dly
         print("   %s:" % label_)
         print("     thorough scan, 3 x 1024 addresses   ~%.0f min"
-              % (5900 * per / 60))
+              % (THOROUGH_PROBES * per / 60))
         print("     every single register, 65536        ~%.1f h"
               % (65536 * per / 3600))
     return result
@@ -1435,7 +1446,7 @@ def main():
                          % RETRY)
     ap.add_argument("--fast", action="store_true",
                     help="skip empty 8-register blocks after probing both "
-                         "ends instead of halving down to single registers. "
+                         "ends instead of probing every register. "
                          "Roughly three times quicker and loses isolated "
                          "registers such as 0x002A -- only for a rough "
                          "boundary check, never for a dump you intend to "
