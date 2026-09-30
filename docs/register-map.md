@@ -19,7 +19,7 @@ swap is needed.
 
 ---
 
-## Data block `0x0001`–`0x0025`
+## Data block `0x0001`–`0x002A`
 
 | Addr | Meaning | Type | Scale | Unit | Confidence |
 |---|---|---|---|---|---|
@@ -56,6 +56,16 @@ swap is needed.
 | `0x0023` | — | u16 | ? | ? | **unknown** — [see below](#0x0023--unidentified) |
 | `0x0024` | — | u16 | ? | ? | unknown, constant 0 |
 | `0x0025` | Device type (`0` here; full list [below](#device-type-0x0025)) | u16 | 1 | — | confirmed |
+| `0x0026` | — | u16 | ? | ? | unknown, usually `1` — **answers only after ~3.6 s**, [see below](#the-slow-registers-0x00260x0029) |
+| `0x0027` | — | u16 | ? | ? | unknown, always `0` so far — slow like `0x0026` |
+| `0x0028` | — | u16 | ? | ? | unknown, usually `1`, occasionally drops to `0` — slow like `0x0026` |
+| `0x0029` | — | u16 | ? | ? | unknown, always `0` so far — slow like `0x0026` |
+| `0x002A` | — | u16 | ? | ? | unknown, constant `1` over days |
+
+The block has no holes: 42 registers from `0x0001` to `0x002A`, and `0x002B` is
+the first address that does not exist. Shown by the
+[full search](#everything-else) and by block reads across the former "gap"
+(`0x0020`–`0x0027` and `0x0023`–`0x002A`, each in one piece).
 
 **`0x000D` is signed.** Reading it as u16 gives nonsense the moment the device
 imports rather than exports. The sign convention follows the CT: positive means
@@ -94,47 +104,34 @@ measured on an E. Readings from an E are welcome as an issue.
 
 ---
 
-## Gap `0x0026`–`0x0029`
+## The slow registers `0x0026`–`0x0029`
 
-Do not answer — and that is unusual. Measured 29 September 2026, on unit 1 and
-unit 11 alike:
+These four do answer — but only after **about 3.6 s**, where every other
+register is back in about 0.2 s. Measured three times, the same each time:
 
-| Addresses | Answer | Time |
-|---|---|---|
-| `0x0026`–`0x0029` | **none** | full timeout |
-| every other non-existent address tried: `0x002B`, `0x0030`, `0x0100`, `0x100B`, `0x1106`, `0x4000`, and 3007 more in a full scan of unit 11 | exception 2 | ~0.21 s |
+| Measurement | `0x0026` | `0x0027` | `0x0028` | `0x0029` | Response time |
+|---|---|---|---|---|---|
+| 29 Sep 2026, single probe | 1 | 0 | 1 | 0 | ~3.6 s |
+| 29 Sep 2026, three reads per address | 1 1 1 | 0 0 0 | 1 1 **0** | 0 0 0 | 3.6–3.7 s |
+| 30 Sep 2026, full search | 1 | 0 | 1 | 0 | 3.65–3.69 s |
 
-An address that does not exist gets exception 2. These four get nothing, and
-afterwards the device needs 2–3 s before it takes the next request
-([measured](gateway.md#measured-timing-29-september-2026)). The firmware treats
-them differently from empty address space.
+Unit 11 gives `1 0 1 0` as well. Since 30 September Home Assistant reads the four
+once a minute; that same evening `0x0026` and `0x0028` dropped to `0` together
+for one minute and came back together. That looks like status bits; a handful of
+changes does not support more.
 
-Any read that overlaps them fails completely, including a read that starts
-inside the valid block — see [gateway.md](gateway.md#the-three-device-quirks).
+**Why they were taken for dead for so long.** The gateway has to wait longer
+than the device takes. The EE11 with `Modbus TimeOut` on *Auto* gives up before
+that — the client gets nothing back, and the device is still busy with its late
+answer for another 2–3 s. Same with a fixed 1000 ms. Only a fixed **5000 ms**
+lets the answer through ([measurements](gateway.md#measured-timing)). The same
+late answer is also the most likely source of the phantom values earlier maps
+and the 18 September dump showed here: it lands on the *next* request.
 
-Earlier maps listed values at `0x0026`/`0x0027`. They have so far been put down to
-a desynchronised gateway. A possibly better explanation, **not yet tested**: the
-device does answer these four, but only after two or three seconds. The EE11 has
-given up by then and does not pass the answer on. That would account for the
-silence, for the busy time afterwards, and for a late answer landing on the next
-request as a phantom value. A read with a long fixed `Modbus TimeOut` on the
-gateway would settle it.
-
-## Isolated register `0x002A`
-
-| Addr | Meaning | Type | Value seen | Confidence |
-|---|---|---|---|---|
-| `0x002A` | — | u16 | `1` | unknown |
-
-Isolated: `0x0029` before it and `0x002B` after it are both dead. It appears in no
-published register map. Constant `1` over days of observation.
-
-Worth knowing methodologically: a block-probing scan **cannot** find this register,
-because every 8-register probe overlapping it also overlaps dead addresses and
-therefore fails entirely. It only turns up if the scanner halves failing blocks
-down to single registers.
-
-`0x002B`–`0x00FF`: no response.
+**What this means for a client.** Reading up to `0x0025` is unaffected. Anyone
+who needs `0x0026`–`0x0029` sets the gateway to a fixed ≥ 4500 ms, their own
+timeout above that, polls them rarely, and never in the same block as fast
+measurements — every request touching one of the four holds the bus for 3.6 s.
 
 ---
 
@@ -259,12 +256,21 @@ the available photograph.
 
 ## Everything else
 
-A coarse sweep of the full 16-bit address space (`0x0000`–`0xFFFF`), two
-8-register probes per 256-address page, 244 pages outside the ranges above:
-**no further page responds.**
+**Full search on 30 September 2026**: all 65 536 addresses read one at a time
+with FC3, unit 1, EE11 fixed at 5000 ms, 6 h 15 min
+([`tools/vollsuche.py`](../tools/vollsuche.py)). Result:
 
-Limitation, stated plainly: this finds blocks, not isolated registers. `0x002A`
-proves such registers exist. The gaps may hold more.
+| | Addresses |
+|---|---|
+| with a value | **65** — exactly the ranges on this page: `0x0001`–`0x002A`, `0x1000`–`0x100A`, `0x1100`–`0x1105`, `0x1200`–`0x1205` |
+| exception 2 ("does not exist") | 65 465 |
+| no answer at first, exception 2 on the retry | 6 — network or gateway dropouts, not registers |
+
+For FC3 and unit 1 the map is therefore **complete**. Outside the four ranges
+there is no readable holding register, and no loner between dead neighbours
+either — which the earlier coarse sweep with 8-register probes could not look
+for. The write registers `0x4000`+ are not among the 65: read, they return
+exception 2.
 
 ### Other function codes
 

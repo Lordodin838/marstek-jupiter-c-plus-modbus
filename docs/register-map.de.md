@@ -19,7 +19,7 @@ Byte- noch Word-Swap nötig.
 
 ---
 
-## Datenblock `0x0001`–`0x0025`
+## Datenblock `0x0001`–`0x002A`
 
 | Adr | Bedeutung | Typ | Faktor | Einheit | Sicherheit |
 |---|---|---|---|---|---|
@@ -56,6 +56,16 @@ Byte- noch Word-Swap nötig.
 | `0x0023` | — | u16 | ? | ? | **unbekannt** — [siehe unten](#0x0023--ungeklärt) |
 | `0x0024` | — | u16 | ? | ? | unbekannt, konstant 0 |
 | `0x0025` | Gerätetyp (`0` hier; vollständige Liste unten) | u16 | 1 | — | bestätigt |
+| `0x0026` | — | u16 | ? | ? | unbekannt, meist `1` — **antwortet erst nach ~3,6 s**, [siehe unten](#die-langsamen-register-0x00260x0029) |
+| `0x0027` | — | u16 | ? | ? | unbekannt, bisher immer `0` — langsam wie `0x0026` |
+| `0x0028` | — | u16 | ? | ? | unbekannt, meist `1`, springt gelegentlich auf `0` — langsam wie `0x0026` |
+| `0x0029` | — | u16 | ? | ? | unbekannt, bisher immer `0` — langsam wie `0x0026` |
+| `0x002A` | — | u16 | ? | ? | unbekannt, über Tage konstant `1` |
+
+Der Block ist lückenlos: 42 Register von `0x0001` bis `0x002A`, und `0x002B` ist
+die erste Adresse, die es nicht gibt. Belegt durch die
+[Vollsuche](#alles-übrige) und durch Blocklesungen über die frühere
+„Lücke" hinweg (`0x0020`–`0x0027` und `0x0023`–`0x002A` je in einem Stück).
 
 **`0x000D` ist vorzeichenbehaftet.** Als u16 gelesen liefert es Unsinn, sobald das
 Gerät bezieht statt einzuspeisen. Das Vorzeichen folgt dem CT: positiv heißt
@@ -95,48 +105,36 @@ hier nichts an einem E. Messwerte von einem E gerne als Issue.
 
 ---
 
-## Lücke `0x0026`–`0x0029`
+## Die langsamen Register `0x0026`–`0x0029`
 
-Antworten nicht — und das ist ungewöhnlich. Gemessen am 29. September 2026, bei
-Unit 1 und Unit 11 gleichermaßen:
+Diese vier antworten — aber erst nach **rund 3,6 s**, während jedes andere
+Register in etwa 0,2 s da ist. Dreimal gemessen, jedes Mal gleich:
 
-| Adressen | Antwort | Zeit |
-|---|---|---|
-| `0x0026`–`0x0029` | **keine** | voller Timeout |
-| jede andere geprüfte nicht vorhandene Adresse: `0x002B`, `0x0030`, `0x0100`, `0x100B`, `0x1106`, `0x4000`, dazu 3007 weitere im vollen Scan von Unit 11 | Exception 2 | ~0,21 s |
+| Messung | `0x0026` | `0x0027` | `0x0028` | `0x0029` | Antwortzeit |
+|---|---|---|---|---|---|
+| 29.09.2026, Einzelprobe | 1 | 0 | 1 | 0 | ~3,6 s |
+| 29.09.2026, dreifach je Adresse | 1 1 1 | 0 0 0 | 1 1 **0** | 0 0 0 | 3,6–3,7 s |
+| 30.09.2026, Vollsuche | 1 | 0 | 1 | 0 | 3,65–3,69 s |
 
-Eine Adresse, die es nicht gibt, bekommt Exception 2. Diese vier bekommen gar
-nichts, und danach braucht das Gerät 2–3 s, bis es die nächste Anfrage annimmt
-([gemessen](gateway.de.md#gemessene-zeiten-29-september-2026)). Die Firmware
-behandelt sie anders als leeren Adressraum.
+Dazu Unit 11 mit `1 0 1 0`, wie Unit 1. Seit dem 30. September liest Home
+Assistant die vier einmal pro Minute mit; am selben Abend fielen `0x0026` und
+`0x0028` für eine Minute gemeinsam auf `0` und kamen gemeinsam zurück. Das sieht
+nach Statusbits aus, mehr lässt sich aus einer Handvoll Wechsel nicht sagen.
 
-Jede Anfrage, die sie überlappt, scheitert vollständig — auch eine, die im
-gültigen Block beginnt, siehe
-[gateway.de.md](gateway.de.md#die-drei-geräteeigenschaften).
+**Warum sie so lange als tot galten.** Das Gateway muss länger warten als das
+Gerät braucht. Der EE11 mit `Modbus TimeOut` auf *Auto* gibt vorher auf — der
+Client bekommt gar nichts zurück, und das Gerät ist danach noch 2–3 s mit der
+verspäteten Antwort beschäftigt. Mit festen 1000 ms genauso. Erst mit festen
+**5000 ms** kommt die Antwort durch
+([Messungen](gateway.de.md#gemessene-zeiten)). Dieselbe verspätete Antwort ist
+auch die wahrscheinlichste Herkunft der Phantomwerte, die frühere Karten und der
+Abzug vom 18. September hier zeigten: sie landet bei der *nächsten* Anfrage.
 
-Frühere Karten führten Werte auf `0x0026`/`0x0027`. Die wurden bisher einem aus
-dem Tritt geratenen Gateway zugeschrieben. Eine möglicherweise bessere Erklärung,
-**noch nicht geprüft**: das Gerät beantwortet diese vier sehr wohl, aber erst
-nach zwei, drei Sekunden. Der EE11 hat bis dahin aufgegeben und reicht die
-Antwort nicht weiter. Das erklärte die Stille, die Besetzt-Zeit danach, und wie
-eine späte Antwort als Phantomwert bei der nächsten Anfrage landen kann. Eine
-Lesung mit langem festem `Modbus TimeOut` am Gateway würde es klären.
-
-## Isoliertes Register `0x002A`
-
-| Adr | Bedeutung | Typ | Gesehener Wert | Sicherheit |
-|---|---|---|---|---|
-| `0x002A` | — | u16 | `1` | unbekannt |
-
-Isoliert: `0x0029` davor und `0x002B` danach sind beide tot. In keiner
-veröffentlichten Registerkarte enthalten. Über Tage konstant `1`.
-
-Methodisch bemerkenswert: eine blockweise Suche **kann** dieses Register nicht
-finden, weil jede 8er-Stichprobe, die es überlappt, auch tote Adressen überlappt
-und deshalb komplett scheitert. Es taucht nur auf, wenn der Scanner fehlgeschlagene
-Blöcke bis auf Einzelregister hinunter halbiert.
-
-`0x002B`–`0x00FF`: keine Antwort.
+**Was das für einen Client heißt.** Wer bis `0x0025` liest, merkt davon nichts.
+Wer `0x0026`–`0x0029` braucht, stellt das Gateway fest auf ≥ 4500 ms, den
+eigenen Timeout darüber, fragt sie selten ab und nicht im selben Block wie
+schnelle Messwerte — jede Anfrage, die einen der vier berührt, belegt den Bus
+für 3,6 s.
 
 ---
 
@@ -262,12 +260,21 @@ auf dem verfügbaren Foto nicht zu erkennen.
 
 ## Alles Übrige
 
-Grobsuche über den vollen 16-Bit-Adressraum (`0x0000`–`0xFFFF`), zwei
-8er-Stichproben je 256er-Seite, 244 Seiten außerhalb der obigen Bereiche:
-**keine weitere Seite antwortet.**
+**Vollsuche am 30. September 2026**: alle 65 536 Adressen einzeln mit FC3
+abgefragt, Unit 1, EE11 fest auf 5000 ms, 6 h 15 min
+([`tools/vollsuche.py`](../tools/vollsuche.py)). Ergebnis:
 
-Einschränkung, klar gesagt: das findet Blöcke, keine Einzelgänger. `0x002A`
-beweist, dass es solche Register gibt. In den Lücken können weitere stecken.
+| | Adressen |
+|---|---|
+| mit Wert | **65** — genau die Bereiche auf dieser Seite: `0x0001`–`0x002A`, `0x1000`–`0x100A`, `0x1100`–`0x1105`, `0x1200`–`0x1205` |
+| Exception 2 („gibt es nicht") | 65 465 |
+| erst ohne Antwort, beim Nachfragen Exception 2 | 6 — Aussetzer von Netz oder Gateway, kein Register |
+
+Die Karte ist damit für FC3 und Unit 1 **vollständig**. Außerhalb der vier
+Bereiche gibt es kein lesbares Holding Register, auch keine Einzelgänger
+zwischen toten Nachbarn — danach hatte die frühere Grobsuche mit
+8er-Stichproben nicht suchen können. Die Schreibregister `0x4000`+ gehören nicht
+zu den 65: lesend liefern sie Exception 2.
 
 ### Andere Funktionscodes
 

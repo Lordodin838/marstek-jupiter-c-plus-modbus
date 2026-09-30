@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Lordodin838/marstek-jupiter-c-plus-modbus?label=Lizenz" alt="Lizenz"></a>
-  <img src="https://img.shields.io/badge/Register-57%20dokumentiert-blue" alt="57 Register dokumentiert">
+  <img src="https://img.shields.io/badge/Register-65%20von%2065536%20belegt-blue" alt="65 von 65536 Adressen belegt">
   <img src="https://img.shields.io/badge/Firmware-142.37.213.110-informational" alt="Firmware 142.37.213.110">
   <img src="https://img.shields.io/badge/Zugriff-nur%20lesend-brightgreen" alt="Nur lesend">
   <a href="https://github.com/Lordodin838/ha-marstek-jupiter-c-plus"><img src="https://img.shields.io/badge/Home%20Assistant-Integration-41BDF5?logo=homeassistant&logoColor=white" alt="Home-Assistant-Integration"></a>
@@ -50,6 +50,7 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 | Zusätzlich geprüft auf | `138.37.213.110` — Registerkarte byteweise identisch |
 | Anbindung | RS485 → Elfin EE11 → Modbus TCP, Unit 1 (antwortet auch auf **11**, siehe unten), 115200 Bd |
 | Funktionscodes | Nur FC3 (Holding Register lesen). **FC1, FC2 und FC4 werden nicht unterstützt** — Exception 1, es gibt also weder Coils noch Discrete Inputs. FC17 und FC43 bleiben über den EE11 unbeantwortet |
+| Adressraum | **Vollständig abgesucht**: alle 65 536 Adressen einzeln, 65 davon belegt ([Vollsuche](#korrekturen-an-der-bekannten-karte), 30.09.2026) |
 | Umfang | Nur lesend. Nichts in diesem Repository schreibt ins Gerät |
 | Stichprobe | Ein Gerät. Alles hier gilt als „an einem Exemplar bestätigt" |
 | Jupiter E | Marsteks eigene Tabelle deckt C und E gemeinsam ab (Gerätetyp 3–5); die Karte dürfte dort ebenso gelten — an einem E wurde nicht gemessen |
@@ -150,21 +151,35 @@ Gemessen gegen die bisher veröffentlichten Grenzen:
 
 | Bisherige Annahme | Befund |
 |---|---|
-| Datenblock reicht bis `0x0027` | **Nein — er endet bei `0x0025`.** `0x0026` und `0x0027` antworten nicht |
-| Ab `0x0028` spiegelt das Gerät den Block | **Nein — `0x0028` und `0x0029` antworten nicht** |
-| — | **`0x002A` existiert**, isoliert, mit toten Adressen davor und danach. Wert `1`, Bedeutung unbekannt |
+| Datenblock reicht bis `0x0027` | **Stimmt, und er reicht noch weiter: bis `0x002A`.** 42 Register ohne Lücke |
+| Ab `0x0028` spiegelt das Gerät den Block | **Nein.** `0x0028`–`0x002A` sind eigene Register mit Werten `1`, `0`, `1` |
+| — | **`0x0026`–`0x0029` antworten erst nach ~3,6 s.** Jedes andere Register braucht ~0,2 s |
 
-Die früher dort gesehenen „Werte" auf `0x0026`/`0x0027` waren ein Artefakt eines
-zu knappen Modbus-Timeouts am TCP-Gateway — verirrte Antworten, die in der
-falschen Anfrage landen. Siehe [`docs/gateway.md`](docs/gateway.md); dieser
-Fehlermodus ist die mit Abstand größte Quelle falscher Daten in so einem Aufbau,
-und er meldet sich nicht von selbst.
+Der dritte Punkt erklärt, warum hier bis zum 29. September das Gegenteil stand. Ein
+RS485-Gateway mit automatischem Modbus-Timeout gibt vor 3,6 s auf; die vier
+Register sehen dann tot aus, und `0x002A` dahinter wirkt wie ein isolierter
+Einzelgänger. Erst mit festen 5000 ms am Gateway kamen die Antworten durch —
+dreimal gemessen, jedes Mal nach derselben Zeit. Was die vier bedeuten, ist
+offen; [die Registerkarte](docs/register-map.de.md#die-langsamen-register-0x00260x0029)
+hat die Werte und was für einen Client daraus folgt.
 
-Eine Grobsuche über den **gesamten 16-Bit-Adressraum** (zwei 8er-Stichproben je
-256er-Seite, 244 Seiten außerhalb der bekannten Bereiche) fand keine weitere
-antwortende Seite. Ehrliche Einschränkung: diese Methode findet *Blöcke*, keine
-isolierten Einzelregister wie `0x002A`. In den Lücken können weitere Einzelgänger
-stecken.
+**Korrektur.** Eine frühere Fassung dieses Abschnitts erklärte, der Datenblock
+ende bei `0x0025`, `0x0026`–`0x0029` existierten nicht, und `0x002A` sei
+isoliert. Das war ein Messfehler durch den zu kurzen Gateway-Timeout, kein
+Befund über das Gerät.
+
+Die verirrten Werte, die ältere Karten und der Abzug vom 18. September auf
+diesen Adressen zeigten (`800` auf `0x0028`), bleiben trotzdem falsch: sie sind
+die verspätete Antwort, die bei der *nächsten* Anfrage landet. Siehe
+[`docs/gateway.de.md`](docs/gateway.de.md); dieser Fehlermodus ist die mit
+Abstand größte Quelle falscher Daten in so einem Aufbau, und er meldet sich nicht
+von selbst.
+
+**Nichts übersehen.** Am 30. September 2026 wurden alle 65 536 Adressen
+einzeln abgefragt, gut sechs Stunden lang. Belegt sind genau 65:
+`0x0001`–`0x002A`, `0x1000`–`0x100A`, `0x1100`–`0x1105` und `0x1200`–`0x1205`.
+Alle übrigen antworten mit „gibt es nicht". Die frühere Grobsuche hatte nur
+Blöcke finden können, keine Einzelgänger — jetzt ist auch das ausgeschlossen.
 
 ---
 
@@ -195,6 +210,8 @@ docs/fault-codes.md       Fehlercodetabelle, hex ↔ dezimal
 docs/gateway.de.md        RS485-Gateway und die drei Geräteeigenschaften,
                           die alles andere bestimmen
 tools/regscan.py          Registerscanner und Differ, ohne Fremdbibliotheken
+tools/vollsuche.py        Alle 65 536 Adressen einzeln, fortsetzbar
+tools/fakejupiter.py      Simuliertes Gerät zum Testen der Werkzeuge
 homeassistant/            Beispielpaket für Home Assistant (natives modbus:)
 dumps/                    Referenz-Registerabzug, Firmware 142
 ```
@@ -213,7 +230,11 @@ python3 regscan.py --sweep                    # zusätzlich 0x0000-0xFFFF absuch
 python3 regscan.py --diff vor-update.json     # gegen einen Abzug halten
 python3 regscan.py --rtu                      # Modbus RTU over TCP
 python3 regscan.py --probe                    # worauf antwortet es sonst?
+python3 vollsuche.py --host 192.168.1.50      # jede Adresse einzeln, ~6 h
 ```
+
+Für `0x0026`–`0x0029` braucht es am Gateway einen festen Modbus-Timeout von
+mindestens 4500 ms und `--timeout 6`; sonst stehen die vier als tot im Abzug.
 
 `--probe` fragt das Gerät nach dem, was ein Registerscan nicht erreicht: andere
 Funktionscodes (Coils und Discrete Inputs sind ein **eigener Adressraum** — dass

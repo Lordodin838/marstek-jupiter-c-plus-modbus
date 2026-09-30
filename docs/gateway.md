@@ -45,9 +45,10 @@ Not a partial read — a refusal.
 
 ### 2. A request that overruns a valid range fails *completely*
 
-This is the one that bites. Reading 8 registers starting at `0x0020` covers
-`0x0020`–`0x0027`. Since `0x0026` and `0x0027` do not exist, the **entire request
-fails** — including the six perfectly valid registers at the front.
+This is the one that bites. Reading 8 registers starting at `0x1008` covers
+`0x1008`–`0x100F`. Since `0x100B`–`0x100F` do not exist, the **entire request
+fails** with exception 2 — including the three perfectly valid registers at the
+front.
 
 The practical consequence for anyone writing a scanner: **a fixed 8-register grid
 silently loses registers at every range boundary.** The first scan run against this
@@ -56,7 +57,13 @@ and `0x0000` does not exist. It also lost `0x1008`–`0x100A`, because that bloc
 would have run to `0x100F`.
 
 The fix is to probe a failing block register by register. That is what
-[`regscan.py`](../tools/regscan.py) does, and it is why `0x002A` was found at all.
+[`regscan.py`](../tools/regscan.py) does.
+
+A variant of this was misleading for a long time: a block touching one of the
+[slow registers `0x0026`–`0x0029`](register-map.md#the-slow-registers-0x00260x0029)
+does not fail with an exception but with silence — if the gateway does not wait
+long enough. That is how `0x002A` came to look like an isolated register between
+dead neighbours, and why the data block seemed to end at `0x0025`.
 
 ### 3. FC4 is not supported
 
@@ -77,8 +84,10 @@ the client accepts it. **The value lands in the wrong sensor.**
 What this looks like in practice:
 
 - A state-of-charge sensor reading `3255` %.
-- Registers that "have values" but should be dead — this is where the phantom
-  `0x0026` / `0x0027` readings in older maps came from.
+- Values at addresses that were not being asked for — most likely how the
+  phantom readings in older maps came about, such as `800` at `0x0028`: the late
+  answer of a [slow register](register-map.md#the-slow-registers-0x00260x0029)
+  lands on the next request.
 - Values that look plausible but belong to a neighbouring register, which is far
   worse, because nothing flags them.
 
@@ -196,7 +205,8 @@ failure it cannot detect is the one that motivates the switch.
 
 The boundary search probes a failing block register by register. That is the
 only method that finds an isolated register with dead neighbours on both sides —
-`0x002A` is exactly that case.
+and that is exactly what `0x002A` looked like while the EE11 was on *Auto* and
+`0x0026`–`0x0029` therefore stayed silent.
 
 `--fast` skips a dead 8-register block after probing only its two ends. On a
 device that rejects dead addresses with exception 2 it is much quicker — and
@@ -211,12 +221,15 @@ Use `--fast` for a rough boundary check. Never for a dump you intend to diff.
 ### What a full scan really costs, and why
 
 Two kinds of "nothing here", measured 29 September 2026 on unit 1 and unit 11
-alike (details in the [register map](register-map.md#gap-0x00260x0029)):
+alike (details in the [register map](register-map.md#the-slow-registers-0x00260x0029)):
 
 - **Almost every non-existent address is rejected with exception 2**, in about
   0.21 s. Cheap, and never retried — an exception is the device speaking.
-- **The four addresses `0x0026`–`0x0029` get no answer at all**, and afterwards
-  the device needs 2–3 s before it takes the next request.
+- **The four addresses `0x0026`–`0x0029` get no answer** — not because they do
+  not exist, but because they take ~3.6 s and the EE11 on *Auto* gives up
+  sooner. Afterwards the device needs 2–3 s before it takes the next request.
+  That only came out on the evening of 29 September, see
+  [Measured timing](#measured-timing).
 
 The second kind is only four addresses, but it sets the floor for the timeout.
 A client timeout shorter than the busy time does not merely waste time: the next
@@ -232,15 +245,27 @@ it happens.
 | tuned: `--timeout 4.5 --retries 0 --delay 0.1` | ~20 min | **~6 h** |
 
 The single-register sweep over the whole address space is therefore a night's
-work, not a weekend's. It has not been run yet.
+work, not a weekend's. **Run on 30 September 2026**, with
+[`tools/vollsuche.py`](../tools/vollsuche.py) instead of `regscan.py`: every
+address exactly once on its own, EE11 fixed at 5000 ms, client timeout 6 s,
+0.1 s pause. 6 h 15 min for 65 536 addresses, 3.1 per second; an exception 2
+cost about 0.21 s, as on *Auto*. The result is in the
+[register map](register-map.md#everything-else): 65 registers, no others.
 
-**Correction.** An earlier version of this page, written the same day, stated
+The script writes every address to a file as it goes and resumes there after an
+interruption, reads a known register every 1024 addresses as a check, and asks
+every silent address a second time after a pause. Both were needed: during the
+run the EE11 was unreachable three times, for up to seven minutes, and six
+addresses stayed silent on the first try — each returned exception 2 on the
+second.
+
+**Correction.** An earlier version of this page, written on 29 September, stated
 that *every* non-existent address stays silent, put the thorough scan at about
 4.4 hours and the full sweep at 84, and claimed `--fast` had no effect on this
-device. All three came from generalising the gap: the dead addresses that had been
-looked at closely — `0x0028` in the old dump, `0x0026` in the calibration — are
-both in it. `--fast` does work here,
-everywhere except the gap.
+device. All three came from generalising the supposed gap `0x0026`–`0x0029`: the
+dead addresses that had been looked at closely — `0x0028` in the old dump,
+`0x0026` in the calibration — are both in it. `--fast` does work here,
+everywhere except at `0x0026`–`0x0029`.
 
 **For judging a gateway change, do not scan at all.** A scan spends its time on
 empty address space, which says nothing about the link. `--benchmark` reads the
@@ -249,47 +274,54 @@ in daily use.
 
 ---
 
-## Measured timing, 29 September 2026
+## Measured timing
 
 `regscan.py --calibrate` measures three things: how fast a real register
 answers, what a request to a dead address produces, and how soon after such a
-request a fresh client gets a real answer again. Run twice, once with the
-EE11's `Modbus TimeOut` on *Auto* and once with a fixed 1000 ms:
+request a fresh client gets a real answer again. Run on 29 September 2026, once
+with the EE11's `Modbus TimeOut` on *Auto* and once with a fixed 1000 ms; the
+5000 ms column comes from single probes the same evening and from the full
+search on the 30th:
 
-| | Auto | fixed 1000 ms |
-|---|---|---|
-| Response time of a real register, median | 219 ms | 512 ms |
-| Response time of a real register, max | 330 ms | 620 ms |
-| Request into the gap, `0x0026` | silence, 10 s | silence, 10 s — **no exception 11** |
-| Next real answer possible after that | 2–3 s | 1.5–2 s |
-| Ordinary non-existent address, e.g. `0x0030` | exception 2, 0.21 s | (measured later, on Auto) |
+| | Auto | fixed 1000 ms | fixed 5000 ms |
+|---|---|---|---|
+| Response time of a real register, median | 219 ms | 512 ms | — |
+| Response time of a real register, max | 330 ms | 620 ms | — |
+| Request for `0x0026` | silence, 10 s | silence, 10 s — **no exception 11** | **value, after ~3.6 s** |
+| Next real answer possible after that | 2–3 s | 1.5–2 s | at once, a 0.5 s gap was enough |
+| Ordinary non-existent address, e.g. `0x0030` | exception 2, 0.21 s | (not measured) | exception 2, ~0.21 s |
 
-**The device, not the gateway, needs the time.** Had the gateway been holding
+**The device, not the gateway, needs the time.** `0x0026`–`0x0029` take 3.6 s
+however the gateway is set; the busy time is the device still getting rid of its
+late answer after the gateway has long given up. Had the gateway been holding
 things up, a fixed 1000 ms would have brought the busy time down to about a
 second. It stayed near two. A second observation points the same way: the unit
 sweep asked 245 non-existent unit IDs with a 2 s timeout and not one reconnect
 was refused. A request addressed to nobody does not occupy the Jupiter, and
 neither does a request for an ordinary non-existent register, which comes back
-as exception 2 in a fifth of a second. A request into the gap does.
+as exception 2 in a fifth of a second. A request for one of the slow registers
+does.
 
 **This is probably why the 5 s timeout above fixed things.** A 3 s client
 timeout sat right on the edge of a 2–3 s busy time — sometimes enough, under load
-often not — whenever a client touched the gap, as maps that let the data block
-run to `0x0027` invited. 5 s cleared it. The fix was found by trial in September;
+often not — whenever a client touched one of the slow registers, as maps that
+let the data block run to `0x0027` invited. Those maps were right about that. 5 s cleared it. The fix was found by trial in September;
 this is the likeliest mechanism behind it.
 
-**Leave `Modbus TimeOut` on Auto.** A fixed value produced no exception 11, no
-shorter busy time, and slower, more scattered answers — at 620 ms uncomfortably
-close to the 1000 ms limit, beyond which the converter would drop a real answer.
-Ten measurements cannot prove the fixed value caused the slowdown, but there is
-nothing on the other side of the scale.
+**`Modbus TimeOut`: Auto, or fixed at ≥ 4500 ms — nothing in between.** If you
+only read up to `0x0025`, *Auto* serves you well. A fixed 1000 ms produced no
+exception 11, no shorter busy time, and slower, more scattered answers — at
+620 ms uncomfortably close to the limit beyond which the converter would drop a
+real answer. To read `0x0026`–`0x0029`, set a fixed 5000 ms and your own client
+timeout above it (6–8 s). The full search at 5000 ms showed no slowdown in the
+ordinary answers.
 
 What this changed in the scanner: when a block fails, it now goes straight to
 single registers instead of halving 8 → 4 → 2 → 1. A dead 8-block costs 9
 probes instead of 15, the result is identical, `0x002A` included. On the test
 device: 5700 requests down to 3454 for the thorough scan. And `--calibrate` now
-measures an ordinary dead address and the gap separately — the first version
-used `0x0026` for both, which is how the gap got mistaken for the rule.
+measures an ordinary dead address and `0x0026` separately — the first version
+used `0x0026` for both, which is how a slow register got mistaken for the rule.
 
 ---
 

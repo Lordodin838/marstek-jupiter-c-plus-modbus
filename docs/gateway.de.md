@@ -46,9 +46,9 @@ Teilergebnis — eine Verweigerung.
 
 ### 2. Eine Anfrage, die über einen gültigen Bereich hinausreicht, scheitert *komplett*
 
-Das ist die, die weh tut. 8 Register ab `0x0020` decken `0x0020`–`0x0027` ab. Da
-`0x0026` und `0x0027` nicht existieren, **scheitert die ganze Anfrage** — inklusive
-der sechs völlig gültigen Register am Anfang.
+Das ist die, die weh tut. 8 Register ab `0x1008` decken `0x1008`–`0x100F` ab. Da
+es `0x100B`–`0x100F` nicht gibt, **scheitert die ganze Anfrage** mit Exception 2 —
+inklusive der drei völlig gültigen Register am Anfang.
 
 Praktische Folge für jeden, der einen Scanner schreibt: **ein starres 8er-Raster
 verliert an jeder Bereichsgrenze stillschweigend Register.** Der erste Scanlauf an
@@ -57,8 +57,13 @@ diesem Gerät hat `0x0001`–`0x0007` komplett übersehen, weil der Rasterblock 
 heraus, weil dieser Block bis `0x100F` gereicht hätte.
 
 Die Abhilfe: einen gescheiterten Block Register für Register abfragen. Genau
-das tut [`regscan.py`](../tools/regscan.py), und nur deshalb wurde `0x002A`
-überhaupt gefunden.
+das tut [`regscan.py`](../tools/regscan.py).
+
+Eine Variante davon hat lange in die Irre geführt: ein Block, der eines der
+[langsamen Register `0x0026`–`0x0029`](register-map.de.md#die-langsamen-register-0x00260x0029)
+berührt, scheitert nicht mit einer Exception, sondern mit Stille — wenn das
+Gateway nicht lange genug wartet. So sah `0x002A` wie ein isoliertes Register
+zwischen toten Nachbarn aus, und der Datenblock schien bei `0x0025` zu enden.
 
 ### 3. FC4 wird nicht unterstützt
 
@@ -80,8 +85,10 @@ Sensor.**
 Wie das in der Praxis aussieht:
 
 - Ein SoC-Sensor, der `3255` % anzeigt.
-- Register, die „Werte haben", obwohl sie tot sein müssten — daher stammen die
-  Phantomwerte auf `0x0026`/`0x0027` in älteren Karten.
+- Werte an Adressen, die gerade gar nicht gefragt waren — so kamen vermutlich
+  die Phantomwerte in älteren Karten zustande, etwa `800` auf `0x0028`: die
+  verspätete Antwort eines [langsamen Registers](register-map.de.md#die-langsamen-register-0x00260x0029)
+  landet bei der nächsten Anfrage.
 - Werte, die plausibel aussehen, aber zum Nachbarregister gehören. Das ist der
   weitaus schlimmere Fall, weil nichts daran auffällt.
 
@@ -203,8 +210,9 @@ der, dessentwegen man umstellt.
 ### Was `--fast` im Scanner absichtlich falsch macht
 
 Die Grenzsuche fragt einen scheiternden Block Register für Register ab. Nur
-so findet man ein Register, das isoliert zwischen toten Nachbarn sitzt —
-`0x002A` ist genau dieser Fall.
+so findet man ein Register, das isoliert zwischen toten Nachbarn sitzt — und
+genau so sah `0x002A` aus, solange der EE11 auf *Auto* stand und
+`0x0026`–`0x0029` deshalb stumm blieben.
 
 `--fast` überspringt einen toten 8er-Block, nachdem nur dessen beide Enden
 geprüft wurden. Bei einem Gerät, das tote Adressen mit Exception 2 ablehnt, ist
@@ -220,12 +228,15 @@ vergleichen willst.
 
 Zwei Arten von „hier ist nichts", gemessen am 29. September 2026 bei Unit 1 und
 Unit 11 gleichermaßen (Einzelheiten in der
-[Registerkarte](register-map.de.md#lücke-0x00260x0029)):
+[Registerkarte](register-map.de.md#die-langsamen-register-0x00260x0029)):
 
 - **Fast jede nicht vorhandene Adresse wird mit Exception 2 abgelehnt**, in rund
   0,21 s. Billig, und nie wiederholt — eine Exception ist das Gerät, das spricht.
-- **Die vier Adressen `0x0026`–`0x0029` bekommen gar keine Antwort**, und danach
-  braucht das Gerät 2–3 s, bis es die nächste Anfrage annimmt.
+- **Die vier Adressen `0x0026`–`0x0029` bekommen keine Antwort** — nicht, weil es
+  sie nicht gibt, sondern weil sie ~3,6 s brauchen und der EE11 auf *Auto* früher
+  aufgibt. Danach braucht das Gerät 2–3 s, bis es die nächste Anfrage annimmt.
+  Das hat sich erst am Abend des 29. September herausgestellt, siehe
+  [Gemessene Zeiten](#gemessene-zeiten).
 
 Die zweite Art betrifft nur vier Adressen, aber sie bestimmt die Untergrenze des
 Timeouts. Ein Client-Timeout unter der Besetzt-Zeit verschwendet nicht nur Zeit:
@@ -241,15 +252,27 @@ korrekter Lauf. Der Scanner sagt das jetzt in Großbuchstaben, wenn es passiert.
 | abgestimmt: `--timeout 4.5 --retries 0 --delay 0.1` | ~20 min | **~6 h** |
 
 Der Einzelregister-Durchlauf über den ganzen Adressraum ist damit eine Nacht,
-kein Wochenende. Gelaufen ist er noch nicht.
+kein Wochenende. **Gelaufen am 30. September 2026**, mit
+[`tools/vollsuche.py`](../tools/vollsuche.py) statt `regscan.py`: jede Adresse
+genau einmal einzeln, EE11 fest auf 5000 ms, Client-Timeout 6 s, 0,1 s Pause.
+6 h 15 min für 65 536 Adressen, also 3,1 pro Sekunde; eine Exception 2 kostete
+dabei wie auf *Auto* rund 0,21 s. Das Ergebnis steht in der
+[Registerkarte](register-map.de.md#alles-übrige): 65 Register, keine weiteren.
 
-**Korrektur.** Eine frühere Fassung dieser Seite vom selben Tag behauptete, *jede*
+Das Skript schreibt jede Adresse sofort in eine Datei und setzt nach einem
+Abbruch dort fort, liest alle 1024 Adressen ein bekanntes Register zur Kontrolle
+und fragt jede stumme Adresse nach einer Pause ein zweites Mal. Beides war nötig:
+während des Laufs war der EE11 dreimal für bis zu sieben Minuten nicht erreichbar,
+und sechs Adressen blieben beim ersten Versuch stumm — beim zweiten kam jedes Mal
+Exception 2.
+
+**Korrektur.** Eine frühere Fassung dieser Seite vom 29. September behauptete, *jede*
 nicht vorhandene Adresse schweige, setzte den gründlichen Scan mit rund 4,4
 Stunden an und den vollen Durchlauf mit 84, und schrieb, `--fast` wirke bei
-diesem Gerät nicht. Alle drei Aussagen kamen daher, dass die Lücke verallgemeinert
-wurde: die toten Adressen, die man sich genauer angesehen hatte — `0x0028` im
+diesem Gerät nicht. Alle drei Aussagen kamen daher, dass die vermeintliche Lücke
+`0x0026`–`0x0029` verallgemeinert wurde: die toten Adressen, die man sich genauer angesehen hatte — `0x0028` im
 alten Abzug, `0x0026` in der Kalibrierung —, liegen beide darin. `--fast` wirkt
-hier sehr wohl, überall außer in der Lücke.
+hier sehr wohl, überall außer bei `0x0026`–`0x0029`.
 
 **Um eine Gateway-Änderung zu beurteilen, gar nicht erst scannen.** Ein Scan
 verbringt seine Zeit im leeren Adressraum, und das sagt über die Verbindung
@@ -258,50 +281,56 @@ Minuten, und es bildet ab, was ein Client im Alltag tut.
 
 ---
 
-## Gemessene Zeiten, 29. September 2026
+## Gemessene Zeiten
 
 `regscan.py --calibrate` misst drei Dinge: wie schnell ein echtes Register
 antwortet, was eine Anfrage an eine tote Adresse auslöst, und wie bald danach ein
-neuer Client wieder eine echte Antwort bekommt. Zweimal gelaufen, einmal mit
-`Modbus TimeOut` am EE11 auf *Auto*, einmal mit festen 1000 ms:
+neuer Client wieder eine echte Antwort bekommt. Gelaufen am 29. September 2026,
+einmal mit `Modbus TimeOut` am EE11 auf *Auto*, einmal mit festen 1000 ms; die
+Spalte 5000 ms stammt aus Einzelproben am selben Abend und der Vollsuche am 30.:
 
-| | Auto | fest 1000 ms |
-|---|---|---|
-| Antwortzeit eines echten Registers, Median | 219 ms | 512 ms |
-| Antwortzeit eines echten Registers, maximal | 330 ms | 620 ms |
-| Anfrage in die Lücke, `0x0026` | Stille, 10 s | Stille, 10 s — **keine Exception 11** |
-| Nächste echte Antwort danach möglich nach | 2–3 s | 1,5–2 s |
-| Gewöhnliche nicht vorhandene Adresse, z. B. `0x0030` | Exception 2, 0,21 s | (später gemessen, auf Auto) |
+| | Auto | fest 1000 ms | fest 5000 ms |
+|---|---|---|---|
+| Antwortzeit eines echten Registers, Median | 219 ms | 512 ms | — |
+| Antwortzeit eines echten Registers, maximal | 330 ms | 620 ms | — |
+| Anfrage an `0x0026` | Stille, 10 s | Stille, 10 s — **keine Exception 11** | **Wert, nach ~3,6 s** |
+| Nächste echte Antwort danach möglich nach | 2–3 s | 1,5–2 s | sofort, 0,5 s Abstand genügten |
+| Gewöhnliche nicht vorhandene Adresse, z. B. `0x0030` | Exception 2, 0,21 s | (nicht gemessen) | Exception 2, ~0,21 s |
 
-**Die Zeit braucht das Gerät, nicht das Gateway.** Hätte das Gateway gebremst,
-hätten feste 1000 ms die Besetzt-Zeit auf etwa eine Sekunde gedrückt. Sie blieb
-bei rund zwei. Eine zweite Beobachtung zeigt in dieselbe Richtung: der
+**Die Zeit braucht das Gerät, nicht das Gateway.** `0x0026`–`0x0029` brauchen
+3,6 s, egal wie das Gateway steht; die Besetzt-Zeit ist das Gerät, das seine
+verspätete Antwort noch loswird, nachdem das Gateway längst aufgegeben hat.
+Hätte das Gateway gebremst, hätten feste 1000 ms die Besetzt-Zeit auf etwa eine
+Sekunde gedrückt. Sie blieb bei rund zwei. Eine zweite Beobachtung zeigt in dieselbe Richtung: der
 Unit-Durchlauf hat 245 nicht vorhandene Unit-IDs mit 2 s Timeout abgefragt, und
 keine einzige neue Verbindung wurde abgewiesen. Eine Anfrage an niemanden
 beschäftigt den Jupiter nicht, und eine nach einem gewöhnlichen nicht vorhandenen
 Register auch nicht — die kommt in einer Fünftelsekunde als Exception 2 zurück.
-Eine Anfrage in die Lücke tut es.
+Eine Anfrage an eines der langsamen Register tut es.
 
 **Vermutlich deshalb hat der 5-s-Timeout weiter oben geholfen.** Ein
 Client-Timeout von 3 s stand genau auf der Kante einer Besetzt-Zeit von 2–3 s —
-manchmal genug, unter Last oft nicht —, sobald ein Client die Lücke berührte, wozu
-Karten verleiteten, die den Datenblock bis `0x0027` reichen ließen. 5 s lagen
+manchmal genug, unter Last oft nicht —, sobald ein Client eines der langsamen
+Register berührte, wozu Karten verleiteten, die den Datenblock bis `0x0027`
+reichen ließen. Die hatten damit übrigens recht. 5 s lagen
 sicher darüber. Die Abhilfe wurde im September ausprobiert; das hier ist der
 wahrscheinlichste Mechanismus dahinter.
 
-**`Modbus TimeOut` auf Auto lassen.** Ein fester Wert brachte keine Exception 11,
-keine kürzere Besetzt-Zeit, dafür langsamere und unruhigere Antworten — mit
-620 ms bedenklich nah an der 1000-ms-Grenze, jenseits derer der Konverter eine
-echte Antwort verwerfen würde. Zehn Messungen beweisen nicht, dass der feste
-Wert die Verlangsamung verursacht hat, aber auf der anderen Seite der Waage liegt
-nichts.
+**`Modbus TimeOut`: Auto, oder fest ≥ 4500 ms — nichts dazwischen.** Wer nur
+bis `0x0025` liest, fährt mit *Auto* gut. Feste 1000 ms brachten keine
+Exception 11, keine kürzere Besetzt-Zeit, dafür langsamere und unruhigere
+Antworten — mit 620 ms bedenklich nah an der Grenze, jenseits derer der Konverter
+eine echte Antwort verwerfen würde. Wer `0x0026`–`0x0029` lesen will, stellt fest
+auf 5000 ms und den eigenen Client-Timeout darüber (6–8 s). In der Vollsuche mit
+5000 ms war an den gewöhnlichen Antworten keine Verlangsamung zu sehen.
 
 Was das am Scanner geändert hat: scheitert ein Block, geht er jetzt direkt auf
 Einzelregister, statt 8 → 4 → 2 → 1 zu halbieren. Ein toter 8er-Block kostet 9
 Proben statt 15, das Ergebnis ist identisch, `0x002A` eingeschlossen. Am
 Testgerät: 3454 statt 5700 Anfragen für den gründlichen Scan. Und `--calibrate`
-misst jetzt eine gewöhnliche tote Adresse und die Lücke getrennt — die erste
-Fassung nahm `0x0026` für beides, und so wurde die Lücke für die Regel gehalten.
+misst jetzt eine gewöhnliche tote Adresse und `0x0026` getrennt — die erste
+Fassung nahm `0x0026` für beides, und so wurde ein langsames Register für die
+Regel gehalten.
 
 ---
 
