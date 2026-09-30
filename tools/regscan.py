@@ -99,10 +99,16 @@ The thorough scan only covers RANGES. --sweep additionally probes the whole
 answers, the whole page is then scanned thoroughly.
 
 HONEST LIMITATION of that method: it finds blocks, not loners. A single
-valid register between dead neighbours -- such as 0x002A -- makes every
-8-register probe fail and stays invisible. That is exactly how the first
-full scan missed 0x002A. To find isolated registers, put the range into
-RANGES, where a failing block is probed register by register.
+valid register between dead neighbours makes every 8-register probe fail
+and stays invisible. To find those, put the range into RANGES, where a
+failing block is probed register by register -- or run vollsuche.py, which
+reads every one of the 65536 addresses on its own (done 30.09.2026 on a
+Jupiter C Plus: 65 registers, all inside RANGES, no loners anywhere).
+
+Slow registers: 0x0026-0x0029 answer only after ~3.6 s. With the gateway's
+Modbus timeout on "Auto" (Elfin EE11) the gateway gives up first and they
+look dead -- which is how 0x002A once looked like an isolated register. To
+read them, set the gateway to a fixed 5000 ms and use --timeout 6.
 """
 
 import argparse
@@ -131,7 +137,7 @@ RETRY = 2                   # retries on timeout
 # Ranges scanned thoroughly -- a failing block is probed register by
 # register here, so
 # isolated single registers are found too. Widened from 0x100 to 0x400
-# each after 0x002A showed that Marstek also places registers outside the
+# each after 0x002A seemed to show that Marstek places registers outside the
 # known blocks.
 RANGES = [
     (0x0000, 0x03FF, "data block"),
@@ -520,7 +526,8 @@ def discover(bus, start, end, fast=False):
     A block reaching even partially into nothing fails entirely. So: when
     a block fails, probe each of its registers on its own.
     That is the only method that also finds an isolated register with dead
-    neighbours on both sides, such as 0x002A.
+    neighbours on both sides -- which is what 0x002A looks like whenever the
+    slow registers 0x0026-0x0029 before it time out.
 
     fast=True enables a shortcut for large empty zones: if an 8-register
     block reports exception 2 (illegal address) and its first and last
@@ -530,8 +537,9 @@ def discover(bus, start, end, fast=False):
     -- and it is WRONG in exactly the case this repository exists for. A
     register sitting alone inside such a block is never probed, and the six
     addresses in between are written into the dump as "exception 2" although
-    the device never said so about them. 0x002A is precisely that case, and
-    a test run with the shortcut on loses it silently. Hence: off by default,
+    the device never said so about them. 0x002A behind a timed-out
+    0x0026-0x0029 is precisely that case, and a test run against the
+    simulated device with the shortcut on loses it silently. Hence: off by default,
     and behind --fast for anyone who only wants a rough boundary check.
     """
     valid, dead = [], {}
@@ -587,8 +595,8 @@ def discover(bus, start, end, fast=False):
         # Halving spends 15 probes on a dead 8-block (1 + 2 + 4 + 8); going
         # straight to singles spends 9 (1 + 8), and finds exactly the same
         # registers -- 0x002A included. On the Jupiter most dead addresses
-        # cost ~0.2 s each (exception 2), but the gap 0x0026-0x0029 stays
-        # silent and costs a full timeout plus 2-3 s busy time per probe,
+        # cost ~0.2 s each (exception 2), but the slow registers
+        # 0x0026-0x0029 stay silent on a gateway timeout below ~3.6 s and costs a full timeout plus 2-3 s busy time per probe,
         # so fewer probes there matter most (measured 29.09.2026).
         for x in range(a + n - 1, a - 1, -1):
             todo.insert(0, (x, 1))
@@ -668,8 +676,8 @@ def quality_report(bus):
                      "usual cause is a")
         lines.append("  --timeout shorter than the time the device stays busy "
                      "after a request")
-        lines.append("  into the gap 0x0026-0x0029 -- measured 2-3 s. On the "
-                     "test device a")
+        lines.append("  to the slow registers 0x0026-0x0029 -- measured 2-3 s. "
+                     "On the test device a")
         lines.append("  0.3 s timeout lost 7 of 61 registers, 0x002A among "
                      "them, and the run")
         lines.append("  finished FASTER than a correct one. Measure with "
@@ -994,9 +1002,12 @@ def probe(bus, units=True):
 # unit 1 and unit 11 alike:
 #   - almost every non-existent address is rejected with exception 2 in
 #     about 0.2 s -- DEAD_ADDRESS is one of those
-#   - the four addresses 0x0026-0x0029 between the data block and 0x002A
-#     get no answer at all, and afterwards the device needs 2-3 s before it
-#     takes the next request -- GAP_ADDRESS is one of those
+#   - the four addresses 0x0026-0x0029 get no answer at all while the
+#     gateway's Modbus timeout is on Auto, and afterwards the device needs
+#     2-3 s before it takes the next request -- GAP_ADDRESS is one of those.
+#     Found later the same day: they are real registers that answer after
+#     ~3.6 s, and do so with the gateway fixed at 5000 ms. The name GAP_*
+#     stayed; "gap" is what they look like on Auto, not what they are.
 # An earlier version used 0x0026 as "the" dead address and generalised its
 # silence to every dead address. That was wrong, and it inflated every
 # runtime estimate by a factor of ten or more.
@@ -1081,14 +1092,14 @@ def calibrate(host, port, unit, mode):
 
     result["dead"] = probe_dead("B1 An ordinary non-existent address",
                                 DEAD_ADDRESS)
-    result["gap"] = probe_dead("B2 The gap between data block and 0x002A",
-                               GAP_ADDRESS)
-    dead_pdu = struct.pack(">BHH", 3, GAP_ADDRESS, 1)   # C uses the gap
+    result["gap"] = probe_dead("B2 A slow register (silent on a short "
+                               "gateway timeout)", GAP_ADDRESS)
+    dead_pdu = struct.pack(">BHH", 3, GAP_ADDRESS, 1)   # C uses it
 
     # C -- busy window after an abandoned request
     time.sleep(4)
-    print("\nC  Busy time after a request into the gap: send it, walk away, "
-          "reconnect after d seconds:", flush=True)
+    print("\nC  Busy time after a request to the slow register: send it, "
+          "walk away, reconnect after d seconds:", flush=True)
     delays = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0]
     table = []
     streak = 0
@@ -1142,17 +1153,20 @@ def calibrate(host, port, unit, mode):
         print("   Ordinary dead address: %s -- every one costs the full "
               "timeout." % dead["answer"])
     if gap["answer"] == "silence":
-        print("   Gap 0x%04X: silence%s."
+        print("   Slow register 0x%04X: silence%s. The gateway gives up "
+              "before the device answers (~3.6 s on a Jupiter C Plus); "
+              "fix the gateway's Modbus timeout at 5000 ms to read it."
               % (GAP_ADDRESS, "" if busy is None
                  else ", device busy for about %.2f s afterwards" % busy))
     else:
-        print("   Gap 0x%04X: %s after %.2f s -- not silent on this device."
-              % (GAP_ADDRESS, gap["answer"], gap["after"]))
+        print("   Slow register 0x%04X: %s after %.2f s -- the gateway "
+              "waits long enough." % (GAP_ADDRESS, gap["answer"],
+                                       gap["after"]))
     if busy is None:
         print("   No reliable reconnect within %.0f s. Keep generous "
               "timeouts." % delays[-1])
     print("   Recommended --timeout: %.1f s  (must exceed the busy time, "
-          "or the scan loses registers right after the gap)" % rec)
+          "or the scan loses registers right after 0x0026-0x0029)" % rec)
     result["cost_per_dead_address"] = dead_cost
 
     gap_cost = (rec + (busy or 0)) * GAP_SIZE
@@ -1480,7 +1494,7 @@ def main():
                     help="skip empty 8-register blocks after probing both "
                          "ends instead of probing every register. "
                          "Roughly three times quicker and loses isolated "
-                         "registers such as 0x002A -- only for a rough "
+                         "registers -- only for a rough "
                          "boundary check, never for a dump you intend to "
                          "diff against")
     ap.add_argument("--diff", metavar="OLD.JSON",

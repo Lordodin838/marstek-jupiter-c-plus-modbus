@@ -13,13 +13,16 @@ laesst sich pruefen, ob der Scanner das auch merkt.
 
 Tote Adressen, wie am echten Geraet gemessen (29.09.2026, Unit 1 und 11):
     Fast jede nicht vorhandene Adresse wird sofort mit Exception 2
-    abgelehnt, in rund 0,2 s. Nur die vier Adressen 0x0026-0x0029 zwischen
-    Datenblock und 0x002A bekommen GAR KEINE Antwort, und danach braucht
-    das Geraet 2-3 s, bis es wieder annimmt (mit --busy nachbilden).
-    Das ist die Voreinstellung.
+    abgelehnt, in rund 0,2 s. Die vier Adressen 0x0026-0x0029 sind
+    dagegen echte, aber LANGSAME Register: das Geraet antwortet erst nach
+    ~3,6 s. Ein EE11 auf "Auto" gibt vorher auf - der Client bekommt gar
+    nichts, und das Geraet braucht danach 2-3 s, bis es wieder annimmt
+    (mit --busy nachbilden). Das ist die Voreinstellung, weil es das ist,
+    was ein Client hinter einem Gateway mit Standardeinstellung sieht.
+    --gap-delay 3.6 bildet stattdessen einen EE11 mit festen 5000 ms nach.
 
     Eine fruehere Fassung liess JEDE tote Adresse schweigen, weil vom
-    echten Geraet nur die Luecke bekannt war. Das hat Laufzeitschaetzungen
+    echten Geraet nur die vermeintliche Luecke bekannt war. Das hat Laufzeitschaetzungen
     um mehr als den Faktor zehn aufgeblaeht. --all-silent gibt es fuer den
     Vergleich weiterhin, bildet aber nicht den Jupiter ab.
 
@@ -36,8 +39,10 @@ import time
 VALID = set(range(0x0001, 0x0026)) | {0x002A} | set(range(0x1000, 0x100B)) \
     | set(range(0x1100, 0x1106)) | set(range(0x1200, 0x1206))
 
-# Adressen, die am echten Geraet stumm bleiben statt Exception 2 zu liefern
+# Adressen, die am echten Geraet erst nach ~3,6 s antworten. Mit "Auto" gibt
+# der EE11 vorher auf, dann sieht es nach Stille aus (29.09.2026 gemessen).
 GAP = set(range(0x0026, 0x002A))
+GAP_VALUES = {0x0026: 1, 0x0027: 0, 0x0028: 1, 0x0029: 0}
 
 
 def crc16(frame):
@@ -69,6 +74,8 @@ class Device:
         self.busy_until = 0.0
         self.no_ident = False
         self.exc11 = None     # Sekunden bis zur Gateway-Ausnahme, sonst Stille
+        self.gap_delay = None  # Luecke antwortet nach so vielen Sekunden
+        self.last_slow = False
 
     def mark_silence(self):
         if self.busy:
@@ -88,10 +95,18 @@ class Device:
         if count < 1 or count > 8:
             return 3, None
         wanted = range(addr, addr + count)
+        self.last_slow = False
         if any(a not in VALID for a in wanted):
+            touches_gap = any(a in GAP for a in wanted)
+            only_known = all(a in VALID or a in GAP for a in wanted)
+            if self.dead == "jupiter" and touches_gap and only_known:
+                if self.gap_delay is None:
+                    return SCHWEIGEN, None      # Gateway gibt vorher auf
+                self.last_slow = True
+                return None, [GAP_VALUES.get(a, value(a)) for a in wanted]
             if self.dead == "silent":
                 return SCHWEIGEN, None
-            if self.dead == "jupiter" and any(a in GAP for a in wanted):
+            if self.dead == "jupiter" and touches_gap:
                 return SCHWEIGEN, None
             return 2, None
         return None, [value(a) for a in wanted]
@@ -208,7 +223,19 @@ def serve_tcp(conn, dev):
             body = bytes([unit]) + answer
             if dev.should_corrupt():
                 tid = (tid + 1) & 0xFFFF
-            conn.sendall(struct.pack(">HHH", tid, 0, len(body)) + body)
+            frame = struct.pack(">HHH", tid, 0, len(body)) + body
+            if dev.last_slow:
+                # langsame Luecke: spaet antworten, bis dahin besetzt
+                dev.busy_until = time.time() + dev.gap_delay
+
+                def spaet(c=conn, f=frame):
+                    try:
+                        c.sendall(f)
+                    except OSError:
+                        pass
+                threading.Timer(dev.gap_delay, spaet).start()
+                continue
+            conn.sendall(frame)
 
 
 def main():
@@ -228,6 +255,12 @@ def main():
     ap.add_argument("--no-ident", action="store_true",
                     help="FC17 und FC43 unbeantwortet lassen, wie es hinter "
                          "dem EE11 im Modbus-Modus beobachtet wurde")
+    ap.add_argument("--gap-delay", type=float, default=None,
+                    help="die Luecke 0x0026-0x0029 nach so vielen Sekunden "
+                         "beantworten (echtes Geraet: ~3,6 s) - bildet einen "
+                         "EE11 mit langem festem Modbus-Timeout nach. Ohne "
+                         "diese Option bleibt die Luecke stumm wie mit 'Auto' "
+                         "(nur TCP)")
     ap.add_argument("--exc11", type=float, default=None,
                     help="statt zu schweigen nach so vielen Sekunden mit "
                          "Exception 11 antworten - bildet ein Gateway mit "
@@ -245,6 +278,7 @@ def main():
                  busy=args.busy)
     dev.no_ident = args.no_ident
     dev.exc11 = args.exc11
+    dev.gap_delay = args.gap_delay
     if args.exc11 is not None and not args.busy:
         dev.busy = args.exc11          # besetzt, bis es aufgibt
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
