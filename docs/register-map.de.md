@@ -278,7 +278,8 @@ zu den 65: lesend liefern sie Exception 2.
 
 ### Andere Funktionscodes
 
-`regscan.py --probe`, 29. September 2026, über den EE11 in der Betriebsart Modbus:
+`regscan.py --probe`, 29. September 2026 über den EE11 in der Betriebsart Modbus,
+wiederholt am 1. Oktober 2026 mit `--rtu` und dem EE11 transparent — gleiches Ergebnis:
 
 | Code | Ergebnis |
 |---|---|
@@ -292,11 +293,15 @@ Coils und Discrete Inputs sind eigene Adressräume; dass Holding Register belegt
 sind, sagt über sie nichts. Jetzt ist es gemessen: das Gerät bietet Holding
 Register an und sonst nichts.
 
-FC17 und FC43 verschluckt höchstwahrscheinlich der Konverter, nicht das Gerät:
-dasselbe Gerät beantwortet FC1, FC2 und FC4 ordentlich mit „nicht unterstützt“,
-und ein Modbus-Stack, der das tut, beantwortet FC17 und FC43 üblicherweise
-genauso. Klären ließe es sich nur mit dem EE11 im transparenten Modus. Nicht
-gemacht.
+**FC17 und FC43 ignoriert das Gerät selbst.** Im transparenten Modus reicht
+der EE11 die rohen RTU-Telegramme nur durch; FC1, FC2 und FC4 kamen so als
+Exception 1 mit gültiger Prüfsumme zurück, FC17 und FC43 blieben stumm. Eine
+Gerätekennung im Klartext gibt es also nicht — Modell und Firmware stehen nur in
+`0x0025` und `0x001B`–`0x001F`.
+
+**Korrektur.** Hier stand vorher, der Konverter verschlucke FC17 und FC43
+höchstwahrscheinlich, weil ein Modbus-Stack, der unbekannte Funktionen mit
+Exception 1 ablehnt, das üblicherweise mit allen tut. Dieser nicht.
 
 ### Unit-IDs
 

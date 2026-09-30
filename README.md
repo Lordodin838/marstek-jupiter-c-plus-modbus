@@ -48,7 +48,7 @@ corrections to the boundaries of the known data block.
 | Firmware | `142.37.213.110` (EMS 142 / BMS 37 / MPPT 213 / INV 110) |
 | Also verified on | `138.37.213.110` — register map byte-for-byte identical |
 | Transport | RS485 → Elfin EE11 → Modbus TCP, unit 1 (also answers on **11**, see below), 115200 Bd |
-| Function codes | FC3 (read holding registers) only. **FC1, FC2 and FC4 are not supported** — exception 1, so there are no coils and no discrete inputs. FC17 and FC43 get no answer through the EE11 |
+| Function codes | FC3 (read holding registers) only. **FC1, FC2 and FC4 are not supported** — exception 1, so there are no coils and no discrete inputs. FC17 and FC43 are ignored entirely — with the gateway transparent too, so there is no plain-text device identification |
 | Address space | **Fully searched**: all 65 536 addresses one by one, 65 of them in use ([full search](#corrections-to-the-known-map), 30 Sep 2026) |
 | Scope | Read-only. Nothing in this repository writes to the device |
 | Sample size | One device. Treat everything as "confirmed on one unit" |

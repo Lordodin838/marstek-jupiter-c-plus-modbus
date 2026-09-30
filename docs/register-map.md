@@ -274,7 +274,8 @@ exception 2.
 
 ### Other function codes
 
-`regscan.py --probe`, 29 September 2026, through the EE11 in Modbus mode:
+`regscan.py --probe`, 29 September 2026 through the EE11 in Modbus mode,
+repeated on 1 October 2026 with `--rtu` and the EE11 transparent — same result:
 
 | Code | Result |
 |---|---|
@@ -288,10 +289,15 @@ Coils and discrete inputs are separate address spaces; that holding registers
 exist says nothing about them. Now it is measured: the device offers holding
 registers and nothing else.
 
-FC17 and FC43 are most likely swallowed by the converter, not ignored by the
-device: the same device answers FC1, FC2 and FC4 properly with "not supported",
-and a Modbus stack that does that usually answers FC17 and FC43 the same way.
-Settling it would need the EE11 in transparent mode. Not done.
+**FC17 and FC43 are ignored by the device itself.** In transparent mode the EE11
+only passes raw RTU frames through; FC1, FC2 and FC4 came back that way as
+exception 1 with a valid checksum, FC17 and FC43 stayed silent. So there is no
+plain-text device identification — model and firmware are only in `0x0025` and
+`0x001B`–`0x001F`.
+
+**Correction.** This used to say the converter most likely swallowed FC17 and
+FC43, because a Modbus stack that rejects unknown functions with exception 1
+usually does so for all of them. This one does not.
 
 ### Unit IDs
 

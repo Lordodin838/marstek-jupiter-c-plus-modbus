@@ -49,7 +49,7 @@ Korrekturen an den Grenzen des bekannten Datenblocks.
 | Firmware | `142.37.213.110` (EMS 142 / BMS 37 / MPPT 213 / INV 110) |
 | Zusätzlich geprüft auf | `138.37.213.110` — Registerkarte byteweise identisch |
 | Anbindung | RS485 → Elfin EE11 → Modbus TCP, Unit 1 (antwortet auch auf **11**, siehe unten), 115200 Bd |
-| Funktionscodes | Nur FC3 (Holding Register lesen). **FC1, FC2 und FC4 werden nicht unterstützt** — Exception 1, es gibt also weder Coils noch Discrete Inputs. FC17 und FC43 bleiben über den EE11 unbeantwortet |
+| Funktionscodes | Nur FC3 (Holding Register lesen). **FC1, FC2 und FC4 werden nicht unterstützt** — Exception 1, es gibt also weder Coils noch Discrete Inputs. FC17 und FC43 ignoriert das Gerät ganz — auch mit dem Gateway transparent, es gibt also keine Gerätekennung im Klartext |
 | Adressraum | **Vollständig abgesucht**: alle 65 536 Adressen einzeln, 65 davon belegt ([Vollsuche](#korrekturen-an-der-bekannten-karte), 30.09.2026) |
 | Umfang | Nur lesend. Nichts in diesem Repository schreibt ins Gerät |
 | Stichprobe | Ein Gerät. Alles hier gilt als „an einem Exemplar bestätigt" |
